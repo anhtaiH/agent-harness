@@ -25,6 +25,12 @@ git -C "$REPO" commit -m "init" >/dev/null
 
 python3 -m py_compile "$ROOT/src/agent_harness.py"
 chmod +x "$ROOT/bin/agent-harness"
+"$ROOT/bin/agent-harness" --version >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$TMP_DIR/not-installed" where --json | grep -q '"installed": false'
+if "$ROOT/bin/agent-harness" --runtime-root "$TMP_DIR/not-installed" doctor --json >/dev/null 2>&1; then
+  echo "expected doctor to fail before setup" >&2
+  exit 1
+fi
 npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --shim-dir "$TMP_DIR/bin" --yes --no-register --json >/dev/null
 test -x "$RUNTIME/source/agent-harness/bin/agent-harness"
 grep -q "source/agent-harness" "$RUNTIME/bin/harness"
@@ -50,5 +56,9 @@ node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" eval run all --no-record >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" upgrade --dry-run --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" uninstall --restore-adapters --dry-run --json >/dev/null
+
+SKIP_RUNTIME="$TMP_DIR/runtime-skip-deps"
+npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --json >/dev/null
+"$TMP_DIR/bin-skip/agent-harness" where --json | grep -q '"installed": true'
 
 echo "agent-harness tests passed"

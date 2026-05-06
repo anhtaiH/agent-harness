@@ -30,6 +30,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_SOURCE = SOURCE_ROOT / "runtime"
 DEFAULT_WORKSPACE = os.environ.get("AGENT_HARNESS_WORKSPACE", "default")
 DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
+PACKAGE_VERSION = "0.1.0"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
@@ -85,6 +86,7 @@ RUNTIME_DIRS = [
     "worktrees",
 ]
 SOURCE_EXCLUDES = {".git", "__pycache__", "node_modules", "dist", "build", ".agent-harness-runtime", "tmp"}
+SOURCE_EXCLUDE_SUFFIXES = {".pyc", ".tgz"}
 SOURCE_BUNDLE_REL = Path("source") / "agent-harness"
 PRIMARY_TOOLS = ["node", "npm", "python3"]
 OPTIONAL_TOOLS = ["git", "gh", "codex", "claude", "cursor-agent", "agent"]
@@ -176,6 +178,15 @@ def save_config(root: Path, config: dict[str, Any]) -> None:
 
 def print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def package_version() -> str:
+    path = SOURCE_ROOT / "package.json"
+    if path.exists():
+        data = load_json(path, {})
+        if isinstance(data.get("version"), str):
+            return data["version"]
+    return PACKAGE_VERSION
 
 
 def valid_task_id(value: str) -> str:
@@ -271,7 +282,7 @@ def chmod_runtime(root: Path) -> None:
 
 
 def source_ignore(_: str, names: list[str]) -> set[str]:
-    return {name for name in names if name in SOURCE_EXCLUDES or name.endswith(".pyc")}
+    return {name for name in names if name in SOURCE_EXCLUDES or any(name.endswith(suffix) for suffix in SOURCE_EXCLUDE_SUFFIXES)}
 
 
 def copy_source_bundle(root: Path, source_root: Path, *, force: bool = False) -> Path:
@@ -434,7 +445,7 @@ def install(args: argparse.Namespace) -> int:
     return 0 if check["ok"] else 1
 
 
-def install_runtime_files(root: Path, workspace: str, repo: Path | None, repo_alias: str | None, source_root: Path) -> dict[str, Any]:
+def install_runtime_files(root: Path, workspace: str, repo: Path | None, repo_alias: str | None, source_root: Path, *, write_adapters: bool = True) -> dict[str, Any]:
     ensure_runtime_dirs(root)
     copy_runtime_tree(root, source_root)
     write_runtime_launcher(root, source_root)
@@ -463,7 +474,8 @@ def install_runtime_files(root: Path, workspace: str, repo: Path | None, repo_al
     save_config(root, config)
     if repo:
         profile_generate(argparse.Namespace(runtime_root=str(root), workspace=workspace, repo=str(repo), repo_alias=repo_alias, json=False, quiet=True))
-    return {"config": config, "adapters": write_adapter_snippets(root, config)}
+    adapters = write_adapter_snippets(root, config) if write_adapters else {"skipped": True}
+    return {"config": config, "adapters": adapters}
 
 
 def next_prompt(workspace: str, repo: Path | None) -> str:
@@ -511,12 +523,12 @@ def setup(args: argparse.Namespace) -> int:
         print_json(data) if args.json else print_setup_failure(data)
         return 1
 
-    install_data = install_runtime_files(root, workspace, repo, args.repo_alias, bundle)
+    install_data = install_runtime_files(root, workspace, repo, args.repo_alias, bundle, write_adapters=not args.no_register)
     shims: dict[str, Any] = {}
     shim_dir = expand(args.shim_dir)
     if not args.no_shims:
         shims = install_shims(root, shim_dir, force=args.force, aliases=not args.no_alias)
-    check = collect_self_check(root, bundle)
+    check = collect_self_check(root, bundle, skip_mcp=args.skip_deps)
     tools = tool_report()
     prompt = next_prompt(workspace, repo)
     data = {
@@ -527,7 +539,7 @@ def setup(args: argparse.Namespace) -> int:
         "source_bundle": str(bundle),
         "dependency_install": deps,
         "tools": tools,
-        "adapters": install_data["adapters"] if not args.no_register else {"skipped": True},
+        "adapters": install_data["adapters"],
         "shims": shims if not args.no_shims else {"skipped": True},
         "shim_dir_on_path": True if args.no_shims else path_has_directory(shim_dir),
         "self_check": {"ok": check["ok"], "failures": check["failures"], "warnings": check["warnings"]},
@@ -563,9 +575,26 @@ def print_setup_success(data: dict[str, Any]) -> None:
     print(f"Runtime: {data['runtime_root']}")
     print(f"Workspace: {data['workspace']}")
     print(f"Repo: {data['repo']}")
-    ready = [name for name, item in data["tools"].items() if isinstance(item, dict) and item.get("available")]
     missing_primary = [name for name in PRIMARY_TOOLS if not data["tools"].get(name, {}).get("available")]
-    print("Tools ready: " + (", ".join(sorted(set(ready))) if ready else "none detected"))
+    print(
+        "Core tools: "
+        + ", ".join(f"{name}={'ready' if data['tools'].get(name, {}).get('available') else 'missing'}" for name in PRIMARY_TOOLS)
+    )
+    cursor_ready = data["tools"].get("cursor-agent", {}).get("available") or data["tools"].get("agent", {}).get("available")
+    print(
+        "Agent tools: "
+        + ", ".join(
+            [
+                f"codex={'ready' if data['tools'].get('codex', {}).get('available') else 'missing'}",
+                f"claude={'ready' if data['tools'].get('claude', {}).get('available') else 'missing'}",
+                f"cursor={'ready' if cursor_ready else 'missing'}",
+            ]
+        )
+    )
+    print(
+        "Support tools: "
+        + ", ".join(f"{name}={'ready' if data['tools'].get(name, {}).get('available') else 'missing'}" for name in ["git", "gh"])
+    )
     if missing_primary:
         print("Required tools missing: " + ", ".join(missing_primary))
     shim_states = [f"{name}:{item.get('status')}" for name, item in (data.get("shims") or {}).items() if isinstance(item, dict)]
@@ -699,6 +728,24 @@ def configured_source_root(root: Path) -> Path:
 
 def doctor(args: argparse.Namespace) -> int:
     root = runtime_root(args)
+    if not config_path(root).exists():
+        data = {
+            "ok": False,
+            "runtime_root": str(root),
+            "failures": ["runtime is not installed or config.json is missing"],
+            "warnings": [],
+            "fix": "Run setup from inside a git repo.",
+            "retry": "npx --yes github:anhtaiH/agent-harness setup",
+        }
+        if args.json:
+            print_json(data)
+        else:
+            print("Agent Harness doctor found issues.")
+            print(f"Runtime: {root}")
+            print("- runtime is not installed or config.json is missing")
+            print(f"Fix: {data['fix']}")
+            print(f"Retry: {data['retry']}")
+        return 1
     source_root = configured_source_root(root)
     data = collect_self_check(root, source_root)
     if args.json:
@@ -721,11 +768,19 @@ def doctor(args: argparse.Namespace) -> int:
 
 def where_command(args: argparse.Namespace) -> int:
     root = runtime_root(args)
+    installed = config_path(root).exists()
     config = load_config(root)
     source_root = configured_source_root(root)
     shims = load_json(root / "state" / "adapters" / "shims.json", {})
+    adapter_paths = {
+        "snippets": root / "state" / "adapter-snippets",
+        "codex": root / "state" / "adapter-snippets" / "codex-mcp.json",
+        "claude": root / "state" / "adapter-snippets" / "claude-mcp.txt",
+        "cursor": root / "state" / "adapter-snippets" / "cursor-mcp.json",
+    }
     data = {
         "runtime_root": str(root),
+        "installed": installed,
         "workspace": config.get("workspace", root.name),
         "source_bundle": str(source_root),
         "config": str(config_path(root)),
@@ -733,17 +788,17 @@ def where_command(args: argparse.Namespace) -> int:
         "dashboard": str(root / "state" / "status" / "index.html"),
         "mcp_server": str(root / "mcp" / "server.mjs"),
         "shims": shims,
-        "adapters": {
-            "snippets": str(root / "state" / "adapter-snippets"),
-            "codex": str(root / "state" / "adapter-snippets" / "codex-mcp.json"),
-            "claude": str(root / "state" / "adapter-snippets" / "claude-mcp.txt"),
-            "cursor": str(root / "state" / "adapter-snippets" / "cursor-mcp.json"),
-        },
+        "adapters": {name: {"path": str(path), "exists": path.exists()} for name, path in adapter_paths.items()},
     }
     if args.json:
         print_json(data)
     else:
         print(f"Runtime: {data['runtime_root']}")
+        if not installed:
+            print("Status: not installed")
+            print("Setup: npx --yes github:anhtaiH/agent-harness setup")
+            return 0
+        print("Status: installed")
         print(f"Workspace: {data['workspace']}")
         print(f"Source bundle: {data['source_bundle']}")
         print(f"Dashboard: {data['dashboard']}")
@@ -755,9 +810,10 @@ def where_command(args: argparse.Namespace) -> int:
         else:
             print("- none configured")
         print("Adapter snippets:")
-        print(f"- Codex: {data['adapters']['codex']}")
-        print(f"- Claude: {data['adapters']['claude']}")
-        print(f"- Cursor: {data['adapters']['cursor']}")
+        for name in ["codex", "claude", "cursor"]:
+            item = data["adapters"][name]
+            state = "ready" if item["exists"] else "not written"
+            print(f"- {name.title()}: {item['path']} ({state})")
     return 0
 
 
@@ -780,7 +836,7 @@ def upgrade(args: argparse.Namespace) -> int:
         print_json(data) if args.json else print_setup_failure(data)
         return 1
     install_runtime_files(root, workspace, repo, default[0] if default else None, bundle)
-    check = collect_self_check(root, bundle)
+    check = collect_self_check(root, bundle, skip_mcp=args.skip_deps)
     data = {"ok": check["ok"], "runtime_root": str(root), "source_bundle": str(bundle), "dependency_install": deps, "self_check": check}
     if args.json:
         print_json(data)
@@ -795,6 +851,8 @@ def upgrade(args: argparse.Namespace) -> int:
 
 def open_dashboard(args: argparse.Namespace) -> int:
     root = runtime_root(args)
+    if not config_path(root).exists():
+        raise HarnessError("No configured runtime found. Run setup first.")
     write_status(root)
     dashboard = root / "state" / "status" / "index.html"
     if args.browser and sys.platform == "darwin":
@@ -1624,7 +1682,7 @@ def eval_run(args: argparse.Namespace) -> int:
     return 0 if data["ok"] else 1
 
 
-def collect_self_check(root: Path, source_root: Path) -> dict[str, Any]:
+def collect_self_check(root: Path, source_root: Path, *, skip_mcp: bool = False) -> dict[str, Any]:
     failures: list[str] = []
     warnings: list[str] = []
     for rel in RUNTIME_DIRS:
@@ -1642,7 +1700,9 @@ def collect_self_check(root: Path, source_root: Path) -> dict[str, Any]:
     if not config.get("repos"):
         warnings.append("no repo aliases configured")
     server = root / "mcp" / "server.mjs"
-    if server.exists() and command_available("node"):
+    if skip_mcp:
+        warnings.append("MCP self-test skipped because dependency install was skipped")
+    elif server.exists() and command_available("node"):
         result = run_text(["node", str(server), "--self-test"], timeout=30)
         if result.returncode != 0:
             failures.append("MCP self-test failed")
@@ -1716,6 +1776,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agent-harness",
         description="Product-style local control plane for agentic engineering.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {package_version()}")
     parser.add_argument("--runtime-root", help="Override runtime root")
     parser.add_argument("--workspace", default=DEFAULT_WORKSPACE, help="Workspace slug")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1728,7 +1789,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--shim-dir", default=str(Path.home() / ".local" / "bin"))
     setup_p.add_argument("--yes", action="store_true", help="Run unattended with detected defaults")
     setup_p.add_argument("--force", action="store_true", help="Replace managed runtime/source bundle and managed shims")
-    setup_p.add_argument("--no-register", action="store_true", help="Skip adapter snippets")
+    setup_p.add_argument("--no-register", action="store_true", help="Skip MCP adapter snippets")
     setup_p.add_argument("--no-shims", action="store_true", help="Do not install ~/.local/bin shims")
     setup_p.add_argument("--no-alias", action="store_true", help="Do not install the ah alias shim")
     setup_p.add_argument("--skip-deps", action="store_true", help="Skip npm ci in the runtime source bundle")
