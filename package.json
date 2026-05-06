@@ -1,0 +1,15 @@
+{
+  "name": "agent-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Opt-in local harness for agentic engineering workflows.",
+  "scripts": {
+    "test": "./tests/run.sh",
+    "self-check": "./bin/agent-harness self-check"
+  },
+  "dependencies": {
+    "fastmcp": "^4.0.1",
+    "zod": "^3.25.17"
+  }
+}

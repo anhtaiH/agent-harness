@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+task_id=""
+print_mode=0
+native_worktree_requested=0
+allow_native_worktree="${AGENT_HARNESS_ALLOW_NATIVE_WORKTREE:-0}"
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --with-org-creds|--with-org-creds=*)
+      echo "Agent harness blocked raw org-credential export. Use connector-native auth and external_write_intent." >&2
+      exit 2
+      ;;
+    --task)
+      [ "$#" -ge 2 ] || { echo "--task requires a task id" >&2; exit 2; }
+      task_id="${2:-}"
+      shift 2
+      ;;
+    --task=*)
+      task_id="${1#--task=}"
+      shift
+      ;;
+    -p|--print)
+      print_mode=1
+      args+=("$1")
+      shift
+      ;;
+    -w|--worktree|--worktree-base|--worktree=*|--worktree-base=*|--skip-worktree-setup)
+      native_worktree_requested=1
+      args+=("$1")
+      shift
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+script_path="${BASH_SOURCE[0]}"
+while [ -L "$script_path" ]; do
+  script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+  script_path="$(readlink "$script_path")"
+  case "$script_path" in /*) ;; *) script_path="$script_dir/$script_path" ;; esac
+done
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+export AGENT_HARNESS_ROOT="$(cd "$script_dir/.." && pwd -P)"
+source "$AGENT_HARNESS_ROOT/bin/env-scrub.sh"
+agent_harness_scrub_env
+
+is_metadata_command() {
+  for value in "$@"; do
+    case "$value" in -h|--help|--version|--version=*|version) return 0 ;; esac
+  done
+  return 1
+}
+
+if [ -n "$task_id" ] && ! [[ "$task_id" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,95}$ ]]; then
+  echo "Invalid agent harness task id: $task_id" >&2
+  exit 2
+fi
+if [ -z "$task_id" ] && ! is_metadata_command "${args[@]}"; then
+  echo "Agent harness requires --task <task-id> for agent sessions." >&2
+  exit 2
+fi
+if [ -n "$task_id" ] && [ "$native_worktree_requested" -eq 1 ] && [ "$allow_native_worktree" != "1" ] && ! is_metadata_command "${args[@]}"; then
+  echo "Agent harness blocked native worktree flags for task $task_id. Use the harness-managed worktree unless the packet explicitly allows otherwise." >&2
+  exit 2
+fi
+if [ -n "$task_id" ]; then
+  export AGENT_HARNESS_TASK_ID="$task_id"
+  if [ "$print_mode" -eq 1 ]; then
+    unset AGENT_HARNESS_REQUIRE_EVIDENCE || true
+  else
+    export AGENT_HARNESS_REQUIRE_EVIDENCE=1
+  fi
+fi
+
+exec claude "${args[@]}"
