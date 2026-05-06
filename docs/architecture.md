@@ -26,3 +26,5 @@ A generated profile includes:
 - `specialists/`
 
 Profiles are source-backed. They can be regenerated without losing tasks or evidence.
+
+For the product-facing lifecycle and diagrams, see [How It Works](how-it-works.md).

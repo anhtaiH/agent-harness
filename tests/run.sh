@@ -25,8 +25,13 @@ git -C "$REPO" commit -m "init" >/dev/null
 
 python3 -m py_compile "$ROOT/src/agent_harness.py"
 chmod +x "$ROOT/bin/agent-harness"
-"$ROOT/bin/agent-harness" install --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --no-register --json >/dev/null
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" self-check --json >/dev/null
+npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --shim-dir "$TMP_DIR/bin" --yes --no-register --json >/dev/null
+test -x "$RUNTIME/source/agent-harness/bin/agent-harness"
+grep -q "source/agent-harness" "$RUNTIME/bin/harness"
+"$RUNTIME/bin/harness" doctor --json >/dev/null
+"$TMP_DIR/bin/agent-harness" doctor --json >/dev/null
+"$TMP_DIR/bin/agent-harness" where --runtime-root "$RUNTIME" --json >/dev/null
+"$TMP_DIR/bin/ah" examples >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Inspect the sample repo" --task-id sample-task --risk green --mode run --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" record-progress sample-task --note "Started sample task." --json >/dev/null
 if "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor sample-task --json >/dev/null 2>&1; then
@@ -43,5 +48,7 @@ fi
 node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" metrics export >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" eval run all --no-record >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" upgrade --dry-run --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" uninstall --restore-adapters --dry-run --json >/dev/null
 
 echo "agent-harness tests passed"

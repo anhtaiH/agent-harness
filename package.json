@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Opt-in local harness for agentic engineering workflows.",
+  "bin": {
+    "agent-harness": "bin/agent-harness",
+    "ah": "bin/agent-harness"
+  },
   "scripts": {
     "test": "./tests/run.sh",
     "self-check": "./bin/agent-harness self-check"
