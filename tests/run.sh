@@ -61,4 +61,37 @@ SKIP_RUNTIME="$TMP_DIR/runtime-skip-deps"
 npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --json >/dev/null
 "$TMP_DIR/bin-skip/agent-harness" where --json | grep -q '"installed": true'
 
+FAKE_HOME="$TMP_DIR/home"
+FAKE_BIN="$TMP_DIR/fake-bin"
+ADAPTER_RUNTIME="$TMP_DIR/runtime-adapters"
+mkdir -p "$FAKE_HOME" "$FAKE_BIN"
+printf '#!/usr/bin/env bash\ncase "$1" in --version) echo codex-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/codex"
+printf '#!/usr/bin/env bash\nif [ "$1" = "mcp" ]; then exit 0; fi\ncase "$1" in --version) echo claude-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/claude"
+printf '#!/usr/bin/env bash\ncase "$1" in --version) echo cursor-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/cursor-agent"
+chmod +x "$FAKE_BIN/codex" "$FAKE_BIN/claude" "$FAKE_BIN/cursor-agent"
+HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" setup --workspace demo-adapters --repo "$REPO" --runtime-root "$ADAPTER_RUNTIME" --shim-dir "$TMP_DIR/bin-adapters" --yes --json >/dev/null
+grep -q "Agent Harness" "$FAKE_HOME/.codex/AGENTS.md"
+grep -q "mcp_servers.demo-adapters-agent-harness" "$FAKE_HOME/.codex/config.toml"
+grep -q "Agent Harness" "$FAKE_HOME/.claude/CLAUDE.md"
+grep -q "demo-adapters-agent-harness" "$FAKE_HOME/.cursor/mcp.json"
+grep -q "CLAUDE.local.md" "$REPO/.git/info/exclude"
+grep -q ".cursor/rules/agent-harness.mdc" "$REPO/.git/info/exclude"
+if git -C "$REPO" status --short | grep -E 'CLAUDE.local.md|\\.cursor/rules/agent-harness\\.mdc'; then
+  echo "local adapter files should be ignored" >&2
+  exit 1
+fi
+HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" --runtime-root "$ADAPTER_RUNTIME" uninstall --restore-adapters --json >/dev/null
+if grep -q "Agent Harness" "$FAKE_HOME/.codex/AGENTS.md"; then
+  echo "Codex managed instructions should be removed on restore" >&2
+  exit 1
+fi
+if grep -q "Agent Harness" "$FAKE_HOME/.claude/CLAUDE.md"; then
+  echo "Claude managed instructions should be removed on restore" >&2
+  exit 1
+fi
+if [ -e "$REPO/CLAUDE.local.md" ] || [ -e "$REPO/.cursor/rules/agent-harness.mdc" ]; then
+  echo "repo-local adapter files should be removed on restore" >&2
+  exit 1
+fi
+
 echo "agent-harness tests passed"

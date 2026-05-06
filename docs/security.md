@@ -8,6 +8,8 @@ Runtime state lives under `~/.agent-harness/<workspace>/`. It contains task pack
 
 Do not commit runtime state. Do not copy another user’s runtime into the generic repo.
 
+Setup may also add managed instruction blocks and MCP entries to user-level agent app configuration. Those edits are marker-delimited and reversible. Project-local adapter files are ignored through git metadata rather than committed to the project.
+
 ## Hard Stops
 
 The default policy denies:

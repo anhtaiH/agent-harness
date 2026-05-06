@@ -24,7 +24,8 @@ flowchart TB
   Setup --> RuntimeFiles["runtime files"]
   Setup --> Profile["generated project profile"]
   Setup --> Shims["agent-harness / ah shims"]
-  Setup --> Adapters["MCP adapter snippets"]
+  Setup --> Adapters["Managed app adapters"]
+  Setup --> Snippets["Manual adapter snippets"]
   RuntimeFiles --> MCPServer["MCP server"]
   RuntimeFiles --> Hooks["hooks"]
   RuntimeFiles --> Skills["skills"]
@@ -32,6 +33,22 @@ flowchart TB
 ```
 
 The runtime source bundle makes installs independent from the temporary `npx` cache. After setup, the runtime launcher points at the copied bundle.
+
+## App Discovery
+
+```mermaid
+flowchart LR
+  Setup["setup"] --> Codex["Codex user instructions + MCP"]
+  Setup --> Claude["Claude user memory + MCP"]
+  Setup --> Cursor["Cursor local rule + MCP"]
+  Setup --> Exclude[".git/info/exclude for repo-local adapter files"]
+  Codex --> Agent["Agent opens in repo"]
+  Claude --> Agent
+  Cursor --> Agent
+  Agent --> Harness["Harness MCP or shim fallback"]
+```
+
+The adapter layer is intentionally thin. It tells each agent surface that a harness exists, points it at the local MCP server, and instructs it to start or resume a task instead of asking the human for backend commands.
 
 ## Task Lifecycle
 

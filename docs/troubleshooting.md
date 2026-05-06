@@ -37,6 +37,14 @@ agent-harness examples
 
 If the app does not load MCP automatically, use the adapter snippets printed by `where`. The agent can still use the local shim commands as a fallback.
 
+If setup skipped an adapter, `where` will show why. Common causes:
+
+- the app CLI is not installed
+- an existing MCP config was left unchanged to avoid unsafe merging
+- a non-harness shim already exists in the target shim directory
+
+Review the output, then rerun setup with `--force` only when you are comfortable replacing managed harness entries or merging a server entry into existing app config.
+
 ## A Shim Was Not Installed
 
 Setup skips existing non-harness files instead of overwriting them. Re-run with a different shim directory:
@@ -53,7 +61,7 @@ Use `--force` only when you are replacing a managed harness shim.
 agent-harness uninstall --restore-adapters
 ```
 
-This removes managed shims and runtime state. It does not edit tracked repo files.
+This removes managed shims, managed app-adapter blocks, managed repo-local adapter files, and runtime state. It does not edit tracked repo files.
 
 ## PR Review Produced No Useful Comments
 

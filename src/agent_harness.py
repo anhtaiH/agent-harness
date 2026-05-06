@@ -24,7 +24,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_SOURCE = SOURCE_ROOT / "runtime"
@@ -209,8 +209,14 @@ def command_available(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run_text(args: list[str], cwd: Path | None = None, timeout: int = 60, check: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=str(cwd) if cwd else None, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=check)
+def run_text(
+    args: list[str],
+    cwd: Path | None = None,
+    timeout: int = 60,
+    check: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=str(cwd) if cwd else None, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=check, env=env)
 
 
 def redaction_patterns(root: Path) -> list[re.Pattern[str]]:
@@ -528,6 +534,7 @@ def setup(args: argparse.Namespace) -> int:
     shim_dir = expand(args.shim_dir)
     if not args.no_shims:
         shims = install_shims(root, shim_dir, force=args.force, aliases=not args.no_alias)
+    user_adapters = {"skipped": True} if args.no_register else install_user_adapters(root, install_data["config"], repo, force=args.force)
     check = collect_self_check(root, bundle, skip_mcp=args.skip_deps)
     tools = tool_report()
     prompt = next_prompt(workspace, repo)
@@ -540,6 +547,7 @@ def setup(args: argparse.Namespace) -> int:
         "dependency_install": deps,
         "tools": tools,
         "adapters": install_data["adapters"],
+        "user_adapters": user_adapters,
         "shims": shims if not args.no_shims else {"skipped": True},
         "shim_dir_on_path": True if args.no_shims else path_has_directory(shim_dir),
         "self_check": {"ok": check["ok"], "failures": check["failures"], "warnings": check["warnings"]},
@@ -602,11 +610,33 @@ def print_setup_success(data: dict[str, Any]) -> None:
         print("Shims: " + ", ".join(shim_states))
     if data.get("shims") and not data.get("shim_dir_on_path"):
         print("PATH note: add the shim directory to PATH, or run the installed command by absolute path.")
+    adapter_summary = summarize_user_adapters(data.get("user_adapters", {}))
+    if adapter_summary:
+        print("App adapters: " + adapter_summary)
     print("Doctor: agent-harness doctor")
     print("Dashboard: agent-harness open")
     print("")
     print("Next prompt to try in Codex, Claude, or Cursor:")
     print(data["next_prompt"])
+
+
+def summarize_user_adapters(data: Any) -> str:
+    if not isinstance(data, dict) or data.get("skipped"):
+        return "skipped"
+    parts = []
+    for name in ["codex", "claude", "cursor"]:
+        item = data.get(name)
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") == "skipped":
+            parts.append(f"{name}=skipped")
+            continue
+        statuses = []
+        for value in item.values():
+            if isinstance(value, dict) and value.get("status"):
+                statuses.append(str(value["status"]))
+        parts.append(f"{name}={'+'.join(sorted(set(statuses))) if statuses else 'ready'}")
+    return ", ".join(parts)
 
 
 def print_setup_failure(data: dict[str, Any]) -> None:
@@ -622,12 +652,209 @@ def print_setup_failure(data: dict[str, Any]) -> None:
     print(f"Retry: {data.get('retry')}")
 
 
+def managed_markers(kind: str, workspace: str, comment: str) -> tuple[str, str]:
+    return (f"{comment} >>> agent-harness:{workspace}:{kind}", f"{comment} <<< agent-harness:{workspace}:{kind}")
+
+
+def replace_managed_block(text: str, begin: str, end: str, block: str) -> str:
+    pattern = re.compile(rf"{re.escape(begin)}[\s\S]*?{re.escape(end)}\n?", re.M)
+    replacement = block if block.endswith("\n") else block + "\n"
+    if pattern.search(text):
+        return pattern.sub(replacement, text)
+    prefix = "" if not text or text.endswith("\n") else "\n"
+    return text + prefix + ("\n" if text.strip() else "") + replacement
+
+
+def remove_managed_block(text: str, begin: str, end: str) -> str:
+    pattern = re.compile(rf"\n?{re.escape(begin)}[\s\S]*?{re.escape(end)}\n?", re.M)
+    return pattern.sub("\n", text).strip() + ("\n" if text.strip() else "")
+
+
+def backup_user_file(root: Path, path: Path, label: str) -> str | None:
+    if not path.exists():
+        return None
+    backup_dir = root / "state" / "adapters" / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{slugify(label)}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{path.name}"
+    shutil.copy2(path, backup)
+    backup.chmod(0o600)
+    return str(backup)
+
+
+def write_managed_block_file(root: Path, path: Path, label: str, begin: str, end: str, body: str, *, backup: bool = False) -> dict[str, Any]:
+    old_text = path.read_text(errors="replace") if path.exists() else ""
+    backup_path = backup_user_file(root, path, label) if backup else None
+    block = "\n".join([begin, body.strip(), end, ""])
+    new_text = replace_managed_block(old_text, begin, end, block)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text)
+    return {"ok": True, "status": "installed", "path": str(path), "backup": backup_path, "kind": "managed-block", "begin": begin, "end": end}
+
+
+def instruction_body(root: Path, workspace: str) -> str:
+    return textwrap.dedent(
+        f"""
+        ## Agent Harness
+
+        - For non-trivial work in a configured repo, use the local Agent Harness runtime for workspace `{workspace}`.
+        - Prefer MCP tools when visible. Otherwise use the `agent-harness` or `ah` shim as the fallback.
+        - Start or resume a task before implementation, keep code changes in a harness worktree when practical, and finish with evidence.
+        - For PR reviews, use the draft-only PR review flow; do not post comments unless the user explicitly asks and a matching write intent exists.
+        - Runtime: `{root}`
+        """
+    ).strip()
+
+
+def install_codex_adapters(root: Path, config: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+    workspace = str(config.get("workspace", root.name))
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    active_instructions = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
+    begin, end = managed_markers("instructions", workspace, "<!--")
+    begin += " -->"
+    end += " -->"
+    instructions = write_managed_block_file(root, active_instructions, "codex-instructions", begin, end, instruction_body(root, workspace))
+
+    config_path_ = codex_home / "config.toml"
+    name = config["mcp"]["name"]
+    mcp_begin, mcp_end = managed_markers("mcp", workspace, "#")
+    server = root / "mcp" / "server.mjs"
+    mcp_body = "\n".join(
+        [
+            f"[mcp_servers.{name}]",
+            f"command = {json.dumps(str(server))}",
+            "startup_timeout_sec = 30",
+            "tool_timeout_sec = 300",
+            "",
+            f"[mcp_servers.{name}.env]",
+            f"AGENT_HARNESS_ROOT = {json.dumps(str(root))}",
+        ]
+    )
+    mcp = write_managed_block_file(root, config_path_, "codex-mcp", mcp_begin, mcp_end, mcp_body, backup=False)
+    return {"instructions": instructions, "mcp": mcp}
+
+
+def install_claude_adapters(root: Path, config: dict[str, Any], repo: Path | None) -> dict[str, Any]:
+    workspace = str(config.get("workspace", root.name))
+    claude_home = Path.home() / ".claude"
+    begin, end = managed_markers("instructions", workspace, "<!--")
+    begin += " -->"
+    end += " -->"
+    user_instructions = write_managed_block_file(root, claude_home / "CLAUDE.md", "claude-user-instructions", begin, end, instruction_body(root, workspace))
+    result: dict[str, Any] = {"user_instructions": user_instructions}
+    if repo:
+        local = repo / "CLAUDE.local.md"
+        result["local_instructions"] = write_managed_block_file(root, local, "claude-local-instructions", begin, end, instruction_body(root, workspace))
+        add_git_info_exclude(repo, ["CLAUDE.local.md"])
+    if command_available("claude"):
+        name = config["mcp"]["name"]
+        command = [
+            "claude",
+            "mcp",
+            "add",
+            "--transport",
+            "stdio",
+            "--scope",
+            "user",
+            "--env",
+            f"AGENT_HARNESS_ROOT={root}",
+            name,
+            "--",
+            str(root / "mcp" / "server.mjs"),
+        ]
+        run = run_text(command, timeout=60)
+        result["mcp"] = {"ok": run.returncode == 0, "status": "registered" if run.returncode == 0 else "failed", "command": "claude mcp add --scope user ...", "stderr": run.stderr[-500:]}
+    else:
+        result["mcp"] = {"ok": False, "status": "skipped", "reason": "claude not found"}
+    return result
+
+
+def install_cursor_adapters(root: Path, config: dict[str, Any], repo: Path | None, *, force: bool = False) -> dict[str, Any]:
+    workspace = str(config.get("workspace", root.name))
+    result: dict[str, Any] = {}
+    if repo:
+        rule = repo / ".cursor" / "rules" / "agent-harness.mdc"
+        rule.parent.mkdir(parents=True, exist_ok=True)
+        rule.write_text(
+            textwrap.dedent(
+                f"""\
+                ---
+                alwaysApply: true
+                ---
+
+                # Agent Harness
+
+                {instruction_body(root, workspace)}
+                """
+            )
+        )
+        add_git_info_exclude(repo, [".cursor/rules/agent-harness.mdc"])
+        result["project_rule"] = {"ok": True, "status": "installed", "path": str(rule), "kind": "managed-file"}
+    cursor_mcp = Path.home() / ".cursor" / "mcp.json"
+    name = config["mcp"]["name"]
+    server_config = {"command": str(root / "mcp" / "server.mjs"), "env": {"AGENT_HARNESS_ROOT": str(root)}}
+    if cursor_mcp.exists():
+        try:
+            data = json.loads(cursor_mcp.read_text())
+        except json.JSONDecodeError as exc:
+            result["mcp"] = {"ok": False, "status": "skipped", "path": str(cursor_mcp), "reason": f"existing mcp.json is invalid JSON: {exc}"}
+            return result
+        servers = data.setdefault("mcpServers", {})
+        if name not in servers and not force:
+            result["mcp"] = {"ok": False, "status": "skipped", "path": str(cursor_mcp), "reason": "existing mcp.json left unchanged; use --force to merge"}
+            return result
+        servers[name] = server_config
+        cursor_mcp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        result["mcp"] = {"ok": True, "status": "installed", "path": str(cursor_mcp), "backup": None}
+    else:
+        cursor_mcp.parent.mkdir(parents=True, exist_ok=True)
+        cursor_mcp.write_text(json.dumps({"mcpServers": {name: server_config}}, indent=2, sort_keys=True) + "\n")
+        result["mcp"] = {"ok": True, "status": "installed", "path": str(cursor_mcp)}
+    return result
+
+
+def add_git_info_exclude(repo: Path, entries: list[str]) -> None:
+    result = run_text(["git", "-C", str(repo), "rev-parse", "--git-path", "info/exclude"], timeout=15)
+    if result.returncode == 0 and result.stdout.strip():
+        git_path = Path(result.stdout.strip()).expanduser()
+        exclude = git_path if git_path.is_absolute() else repo / git_path
+    else:
+        exclude = repo / ".git" / "info" / "exclude"
+    if not exclude.exists():
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("")
+    text = exclude.read_text(errors="replace")
+    with exclude.open("a") as handle:
+        for entry in entries:
+            if entry not in text:
+                handle.write(("\n" if text and not text.endswith("\n") else "") + entry + "\n")
+                text += ("\n" if text and not text.endswith("\n") else "") + entry + "\n"
+
+
+def install_user_adapters(root: Path, config: dict[str, Any], repo: Path | None, *, force: bool = False) -> dict[str, Any]:
+    def attempt(name: str, available: bool, installer: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        if not available:
+            return {"status": "skipped", "reason": f"{name} not found"}
+        try:
+            return installer()
+        except Exception as exc:
+            return {"ok": False, "status": "failed", "reason": str(exc)[:500]}
+
+    data = {
+        "installed_at": utc_now(),
+        "codex": attempt("codex", command_available("codex") or (Path.home() / ".codex").exists(), lambda: install_codex_adapters(root, config, force=force)),
+        "claude": attempt("claude", command_available("claude") or (Path.home() / ".claude").exists(), lambda: install_claude_adapters(root, config, repo)),
+        "cursor": attempt("cursor", command_available("cursor-agent") or command_available("agent") or (Path.home() / ".cursor").exists(), lambda: install_cursor_adapters(root, config, repo, force=force)),
+    }
+    write_json(root / "state" / "adapters" / "user-adapters.json", data)
+    return data
+
+
 def write_adapter_snippets(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     snippets = root / "state" / "adapter-snippets"
     snippets.mkdir(parents=True, exist_ok=True)
     mcp_command = str(root / "mcp" / "server.mjs")
     (snippets / "codex-mcp.json").write_text(json.dumps({"mcpServers": {config["mcp"]["name"]: {"command": mcp_command, "env": {"AGENT_HARNESS_ROOT": str(root)}}}}, indent=2) + "\n")
-    (snippets / "claude-mcp.txt").write_text(f"claude mcp add {config['mcp']['name']} {mcp_command} --env AGENT_HARNESS_ROOT={root}\n")
+    (snippets / "claude-mcp.txt").write_text(f"claude mcp add --transport stdio --scope user --env AGENT_HARNESS_ROOT={root} {config['mcp']['name']} -- {mcp_command}\n")
     (snippets / "cursor-mcp.json").write_text(json.dumps({"mcpServers": {config["mcp"]["name"]: {"command": mcp_command, "env": {"AGENT_HARNESS_ROOT": str(root)}}}}, indent=2) + "\n")
     return {
         "snippets": str(snippets),
@@ -705,6 +932,67 @@ def restore_shims(root: Path) -> dict[str, Any]:
     return {"ok": True, "results": results}
 
 
+def restore_user_adapters(root: Path) -> dict[str, Any]:
+    data = load_json(root / "state" / "adapters" / "user-adapters.json", {})
+    workspace = str(load_config(root).get("workspace", root.name))
+    results: list[dict[str, Any]] = []
+    for item in flatten_adapter_entries(data):
+        path_text = item.get("path")
+        begin = item.get("begin")
+        end = item.get("end")
+        kind = item.get("kind")
+        if path_text and begin and end:
+            path = Path(path_text).expanduser()
+            if path.exists():
+                new_text = remove_managed_block(path.read_text(errors="replace"), begin, end)
+                if path.name == "CLAUDE.local.md" and not new_text.strip():
+                    path.unlink()
+                    results.append({"path": str(path), "restored": True, "kind": "managed-local-block", "removed": True})
+                else:
+                    path.write_text(new_text)
+                    results.append({"path": str(path), "restored": True, "kind": "managed-block"})
+        elif path_text and kind == "managed-file":
+            path = Path(path_text).expanduser()
+            if path.exists() and "Agent Harness" in path.read_text(errors="replace"):
+                path.unlink()
+                results.append({"path": str(path), "restored": True, "kind": "managed-file"})
+    cursor = data.get("cursor") if isinstance(data, dict) else {}
+    cursor_mcp = cursor.get("mcp") if isinstance(cursor, dict) else {}
+    if isinstance(cursor_mcp, dict) and cursor_mcp.get("path") and cursor_mcp.get("status") == "installed":
+        path = Path(cursor_mcp["path"]).expanduser()
+        name = load_config(root).get("mcp", {}).get("name", f"{workspace}-agent-harness")
+        if path.exists():
+            try:
+                parsed = json.loads(path.read_text())
+                servers = parsed.get("mcpServers", {})
+                if isinstance(servers, dict) and name in servers:
+                    servers.pop(name, None)
+                    path.write_text(json.dumps(parsed, indent=2, sort_keys=True) + "\n")
+                    results.append({"path": str(path), "restored": True, "kind": "cursor-mcp"})
+            except json.JSONDecodeError:
+                results.append({"path": str(path), "restored": False, "kind": "cursor-mcp", "reason": "invalid JSON"})
+    claude = data.get("claude") if isinstance(data, dict) else {}
+    claude_mcp = claude.get("mcp") if isinstance(claude, dict) else {}
+    if isinstance(claude_mcp, dict) and claude_mcp.get("status") == "registered" and command_available("claude"):
+        name = load_config(root).get("mcp", {}).get("name", f"{workspace}-agent-harness")
+        run = run_text(["claude", "mcp", "remove", name], timeout=30)
+        results.append({"server": name, "restored": run.returncode == 0, "kind": "claude-mcp", "stderr": run.stderr[-300:]})
+    return {"ok": True, "results": results}
+
+
+def flatten_adapter_entries(value: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        if value.get("path"):
+            out.append(value)
+        for child in value.values():
+            out.extend(flatten_adapter_entries(child))
+    elif isinstance(value, list):
+        for child in value:
+            out.extend(flatten_adapter_entries(child))
+    return out
+
+
 def uninstall(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     if not root.exists():
@@ -713,7 +1001,7 @@ def uninstall(args: argparse.Namespace) -> int:
     if args.dry_run:
         data = {"ok": True, "dry_run": True, "would_remove": str(root), "would_restore_adapters": bool(args.restore_adapters)}
     else:
-        restored = restore_shims(root) if args.restore_adapters else {"skipped": True}
+        restored = {"shims": restore_shims(root), "user_adapters": restore_user_adapters(root)} if args.restore_adapters else {"skipped": True}
         shutil.rmtree(root)
         data = {"ok": True, "removed": True, "runtime_root": str(root), "restored_adapters": restored}
     print_json(data) if args.json else print(data)
@@ -772,6 +1060,7 @@ def where_command(args: argparse.Namespace) -> int:
     config = load_config(root)
     source_root = configured_source_root(root)
     shims = load_json(root / "state" / "adapters" / "shims.json", {})
+    user_adapters = load_json(root / "state" / "adapters" / "user-adapters.json", {})
     adapter_paths = {
         "snippets": root / "state" / "adapter-snippets",
         "codex": root / "state" / "adapter-snippets" / "codex-mcp.json",
@@ -789,6 +1078,7 @@ def where_command(args: argparse.Namespace) -> int:
         "mcp_server": str(root / "mcp" / "server.mjs"),
         "shims": shims,
         "adapters": {name: {"path": str(path), "exists": path.exists()} for name, path in adapter_paths.items()},
+        "user_adapters": user_adapters,
     }
     if args.json:
         print_json(data)
@@ -814,6 +1104,9 @@ def where_command(args: argparse.Namespace) -> int:
             item = data["adapters"][name]
             state = "ready" if item["exists"] else "not written"
             print(f"- {name.title()}: {item['path']} ({state})")
+        summary = summarize_user_adapters(user_adapters)
+        if summary:
+            print(f"Installed app adapters: {summary}")
     return 0
 
 
@@ -1703,7 +1996,9 @@ def collect_self_check(root: Path, source_root: Path, *, skip_mcp: bool = False)
     if skip_mcp:
         warnings.append("MCP self-test skipped because dependency install was skipped")
     elif server.exists() and command_available("node"):
-        result = run_text(["node", str(server), "--self-test"], timeout=30)
+        env = os.environ.copy()
+        env["AGENT_HARNESS_ROOT"] = str(root)
+        result = run_text(["node", str(server), "--self-test"], timeout=30, env=env)
         if result.returncode != 0:
             failures.append("MCP self-test failed")
         else:
@@ -1789,7 +2084,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--shim-dir", default=str(Path.home() / ".local" / "bin"))
     setup_p.add_argument("--yes", action="store_true", help="Run unattended with detected defaults")
     setup_p.add_argument("--force", action="store_true", help="Replace managed runtime/source bundle and managed shims")
-    setup_p.add_argument("--no-register", action="store_true", help="Skip MCP adapter snippets")
+    setup_p.add_argument("--no-register", action="store_true", help="Skip app adapter registration and MCP snippets")
     setup_p.add_argument("--no-shims", action="store_true", help="Do not install ~/.local/bin shims")
     setup_p.add_argument("--no-alias", action="store_true", help="Do not install the ah alias shim")
     setup_p.add_argument("--skip-deps", action="store_true", help="Skip npm ci in the runtime source bundle")

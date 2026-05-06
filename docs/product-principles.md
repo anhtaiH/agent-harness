@@ -10,6 +10,10 @@ There should be one primary install command and one next prompt. Advanced backen
 
 Setup should avoid tracked repo edits. Runtime state, profiles, generated context, memory, metrics, and worktrees belong in the local runtime.
 
+## Preserve The User's App Configuration
+
+User-space adapter edits should be small, marker-delimited, recorded in restore metadata, and removable. Unknown existing config should be skipped or merged only with an explicit `--force`.
+
 ## Make Failure Actionable
 
 Every setup failure should explain:

@@ -18,15 +18,18 @@ function configuredSourceRoot() {
   }
 }
 
-async function importPackage(packageName, relativePath) {
+async function importPackage(packageName, relativePaths) {
   try {
     return await import(packageName);
   } catch {
     const sourceRoot = configuredSourceRoot();
-    const candidates = [
-      sourceRoot ? path.join(sourceRoot, "node_modules", ...relativePath) : null,
-      path.join(os.homedir(), "node_modules", ...relativePath),
-    ].filter(Boolean);
+    const paths = Array.isArray(relativePaths?.[0]) ? relativePaths : [relativePaths];
+    const candidates = paths.flatMap((relativePath) =>
+      [
+        sourceRoot ? path.join(sourceRoot, "node_modules", ...relativePath) : null,
+        path.join(os.homedir(), "node_modules", ...relativePath),
+      ].filter(Boolean)
+    );
     let lastError;
     for (const candidate of candidates) {
       try {
@@ -41,7 +44,7 @@ async function importPackage(packageName, relativePath) {
 
 const fastMcp = await importPackage("fastmcp", ["fastmcp", "dist", "FastMCP.js"]);
 const { FastMCP, UserError } = fastMcp;
-const zod = await importPackage("zod", ["zod", "dist", "esm", "index.js"]);
+const zod = await importPackage("zod", [["zod", "index.js"], ["zod", "dist", "esm", "index.js"]]);
 const { z } = zod;
 
 const execFileAsync = promisify(execFile);
