@@ -2457,9 +2457,11 @@ DRY_RUN_OUTPUTS = {
     "planner": "",  # planner dry-run uses default_plan_steps instead
     "researcher": "FINDINGS:\n1. Dry-run finding (source: dry-run).\n\nOPEN QUESTIONS:\n- none\n",
     "worker": "RESULT:\n- files changed: none (dry run)\n- check: dry-run -> PASS\n- residual risk: none (dry run)\n",
-    "qa": "QA: PASS\n- dry-run verification -> PASS (simulated)\n\n```text\ndry run\n```\n",
-    "reviewer": "VERDICT: APPROVE\n\nNo findings (dry run).\n",
-    "security": "VERDICT: NO-BLOCKING-FINDINGS\n\nChecked (dry run): secrets, injection, trust boundaries, supply chain, data exposure.\n",
+    # Deliberately place a preamble line before the verdict token — agents do
+    # this naturally, and the gate must find the verdict anywhere, not just line 1.
+    "qa": "Ran the suite; all checks reproduce.\nQA: PASS\n- dry-run verification -> PASS (simulated)\n",
+    "reviewer": "I traced every branch against the packet and found no scope drift.\n\nVERDICT: APPROVE-WITH-NITS\n\n1. low - a nit (dry run).\n",
+    "security": "Checked secrets, injection, trust boundaries, supply chain, data exposure.\n\nVERDICT: NO-BLOCKING-FINDINGS\n",
     "synthesizer": (
         "## Summary\n\nDry-run orchestration completed all planned steps.\n\n"
         "## Positive Proof\n\n- Command or inspection: QA step reported PASS (simulated)\n- Result: PASS\n\n"
@@ -2564,24 +2566,43 @@ def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str
     return final.read_text(errors="replace")
 
 
+def last_marker_line(output: str, prefix: str) -> str | None:
+    """Return the last line that begins (after optional markdown emphasis) with prefix.
+
+    Agents reliably emit the verdict token on its own line but often precede it
+    with a sentence or two; scanning for the last matching line is far more
+    robust than requiring line 1, while staying deterministic (the final,
+    conclusive verdict wins).
+    """
+    found = None
+    for line in output.splitlines():
+        stripped = line.strip().lstrip("*# ").strip()
+        if stripped.upper().startswith(prefix.upper()):
+            found = stripped
+    return found
+
+
 def step_gate(step: dict[str, Any], output: str) -> tuple[bool, str]:
     """Deterministic verdict extraction per role. Returns (passed, verdict)."""
-    first = next((line.strip() for line in output.splitlines() if line.strip()), "")
     role = step["role"]
     if role == "qa":
-        if first.startswith("QA: PASS"):
-            return True, "QA: PASS"
-        return False, first if first.startswith("QA:") else "QA: FAIL (unparseable report)"
+        line = last_marker_line(output, "QA:")
+        if line and line.upper().startswith("QA: PASS"):
+            return True, line
+        return False, line or "QA: FAIL (no QA: verdict line found)"
     if role == "reviewer":
-        if first.startswith("VERDICT: APPROVE"):
-            return True, first
-        return False, first if first.startswith("VERDICT:") else "VERDICT: REQUEST-CHANGES (unparseable verdict)"
+        line = last_marker_line(output, "VERDICT:")
+        if line and line.upper().startswith("VERDICT: APPROVE"):
+            return True, line
+        return False, line or "VERDICT: REQUEST-CHANGES (no VERDICT: line found)"
     if role == "security":
-        if first.startswith("VERDICT: NO-BLOCKING-FINDINGS"):
-            return True, first
-        return False, first if first.startswith("VERDICT:") else "VERDICT: BLOCKING-FINDINGS (unparseable verdict)"
+        line = last_marker_line(output, "VERDICT:")
+        if line and line.upper().startswith("VERDICT: NO-BLOCKING-FINDINGS"):
+            return True, line
+        return False, line or "VERDICT: BLOCKING-FINDINGS (no VERDICT: line found)"
     if role == "worker":
-        if "BLOCKED:" in output[:2000]:
+        # A BLOCKED: report on its own line fails the step; a mention inside prose does not.
+        if any(ln.strip().lstrip("*# ").upper().startswith("BLOCKED:") for ln in output.splitlines()):
             return False, "BLOCKED"
         return True, "RESULT"
     return bool(output.strip()), "ok" if output.strip() else "empty output"
