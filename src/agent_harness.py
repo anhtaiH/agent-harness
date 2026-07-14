@@ -10,10 +10,13 @@ memory inboxes, and local metrics.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import contextlib
 from datetime import datetime, timedelta, timezone
 import fnmatch
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -65,6 +68,9 @@ MCP_TOOLS = [
     "profile_generate",
     "self_check",
     "verify_gates",
+    "orchestrate_plan",
+    "orchestrate_run",
+    "orchestrate_status",
 ]
 RUNTIME_DIRS = [
     "agents",
@@ -81,6 +87,7 @@ RUNTIME_DIRS = [
     "metrics",
     "policy",
     "profiles",
+    "roles",
     "schemas",
     "state/status",
     "tasks",
@@ -2174,6 +2181,466 @@ def review_synthesize(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Orchestration conductor -------------------------------------------------
+#
+# A deterministic local conductor in the Symphony / Gas Town shape: the plan is
+# a file-based work ledger; specialized role agents (planner, researcher,
+# worker, qa, reviewer, security, synthesizer) execute bounded steps; the
+# conductor owns all state transitions and gates them on strict, parseable
+# verdicts. Humans set intent and review outcomes; agents do the middle.
+
+ORCH_ROLES = {"researcher", "worker", "qa", "reviewer", "security", "synthesizer"}
+ORCH_READ_ONLY_ROLES = {"researcher", "qa", "reviewer", "security"}
+ORCH_MAX_PARALLEL = 3
+
+
+def orchestration_dir(root: Path, task_id: str) -> Path:
+    return task_dir(root, task_id) / "orchestration"
+
+
+def orch_ledger(root: Path, task_id: str, event: str, **fields: Any) -> None:
+    append_jsonl(orchestration_dir(root, task_id) / "ledger.jsonl", {"event": event, "at": utc_now(), **fields})
+
+
+def load_plan(root: Path, task_id: str) -> dict[str, Any]:
+    plan = load_json(orchestration_dir(root, task_id) / "plan.json", {})
+    if not plan:
+        raise HarnessError(f"No orchestration plan for task {task_id}. Run `orchestrate plan` first.")
+    return plan
+
+
+def save_plan(root: Path, task_id: str, plan: dict[str, Any]) -> None:
+    write_json(orchestration_dir(root, task_id) / "plan.json", plan)
+
+
+def default_plan_steps(risk: str) -> list[dict[str, Any]]:
+    steps = [
+        {"id": "research", "role": "researcher", "goal": "Map the code, tests, and docs relevant to the task goal; cite files and existing checks.", "depends_on": []},
+        {"id": "implement", "role": "worker", "goal": "Implement the task goal within packet scope with the smallest coherent change.", "depends_on": ["research"]},
+        {"id": "verify", "role": "qa", "goal": "Run the packet verification commands and report per-check results.", "depends_on": ["implement"]},
+        {"id": "review", "role": "reviewer", "goal": "Independent review of the diff against the packet.", "depends_on": ["verify"]},
+    ]
+    synth_deps = ["review"]
+    if risk in {"yellow", "red", "high", "critical"}:
+        steps.append({"id": "security-review", "role": "security", "goal": "Security review of the diff.", "depends_on": ["verify"], "group": "review"})
+        steps[-2]["group"] = "review"
+        synth_deps.append("security-review")
+    steps.append({"id": "synthesize", "role": "synthesizer", "goal": "Draft the evidence sections from step outputs.", "depends_on": synth_deps})
+    return steps
+
+
+def normalize_steps(raw_steps: Any, max_steps: int) -> list[dict[str, Any]]:
+    """Validate planner output into executable steps; raises HarnessError on structural problems."""
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise HarnessError("Planner output is not a non-empty JSON array of steps")
+    if len(raw_steps) > max_steps:
+        raise HarnessError(f"Planner produced {len(raw_steps)} steps; limit is {max_steps}")
+    steps: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for raw in raw_steps:
+        if not isinstance(raw, dict):
+            raise HarnessError("Planner step is not an object")
+        step_id = str(raw.get("id", "")).strip().lower()
+        role = str(raw.get("role", "")).strip().lower()
+        goal = str(raw.get("goal", "")).strip()
+        deps = raw.get("depends_on", [])
+        if not re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", step_id):
+            raise HarnessError(f"Invalid step id: {step_id!r}")
+        if step_id == "plan":
+            raise HarnessError("Step id 'plan' is reserved for planner artifacts")
+        if step_id in ids:
+            raise HarnessError(f"Duplicate step id: {step_id}")
+        if role not in ORCH_ROLES:
+            raise HarnessError(f"Unknown role: {role!r}")
+        if not goal:
+            raise HarnessError(f"Step {step_id} has no goal")
+        if not isinstance(deps, list) or not all(isinstance(item, str) for item in deps):
+            raise HarnessError(f"Step {step_id} has invalid depends_on")
+        step = {"id": step_id, "role": role, "goal": goal, "depends_on": deps, "status": "pending", "attempts": 0, "verdict": None, "started_at": None, "finished_at": None}
+        if raw.get("group"):
+            step["group"] = str(raw["group"])
+        steps.append(step)
+        ids.add(step_id)
+    for step in steps:
+        for dep in step["depends_on"]:
+            if dep not in ids:
+                raise HarnessError(f"Step {step['id']} depends on unknown step {dep!r}")
+    # Cycle check via Kahn's algorithm.
+    remaining = {step["id"]: set(step["depends_on"]) for step in steps}
+    while remaining:
+        ready = [step_id for step_id, deps in remaining.items() if not deps]
+        if not ready:
+            raise HarnessError("Plan has a dependency cycle")
+        for step_id in ready:
+            remaining.pop(step_id)
+            for deps in remaining.values():
+                deps.discard(step_id)
+    return steps
+
+
+def parse_planner_steps(text: str, max_steps: int) -> list[dict[str, Any]]:
+    fenced = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
+    candidates = fenced + [text]
+    for candidate in candidates:
+        start = candidate.find("[")
+        end = candidate.rfind("]")
+        if start == -1 or end <= start:
+            continue
+        try:
+            return normalize_steps(json.loads(candidate[start : end + 1]), max_steps)
+        except (json.JSONDecodeError, HarnessError):
+            continue
+    raise HarnessError("Could not parse a valid step array from planner output")
+
+
+def role_contract(root: Path, role: str) -> str:
+    path = root / "roles" / f"{role}.md"
+    if path.exists():
+        return path.read_text(errors="replace")
+    return f"# Role: {role}\n\nComplete the step goal honestly and report your output.\n"
+
+
+DRY_RUN_OUTPUTS = {
+    "planner": "",  # planner dry-run uses default_plan_steps instead
+    "researcher": "FINDINGS:\n1. Dry-run finding (source: dry-run).\n\nOPEN QUESTIONS:\n- none\n",
+    "worker": "RESULT:\n- files changed: none (dry run)\n- check: dry-run -> PASS\n- residual risk: none (dry run)\n",
+    "qa": "QA: PASS\n- dry-run verification -> PASS (simulated)\n\n```text\ndry run\n```\n",
+    "reviewer": "VERDICT: APPROVE\n\nNo findings (dry run).\n",
+    "security": "VERDICT: NO-BLOCKING-FINDINGS\n\nChecked (dry run): secrets, injection, trust boundaries, supply chain, data exposure.\n",
+    "synthesizer": (
+        "## Summary\n\nDry-run orchestration completed all planned steps.\n\n"
+        "## Positive Proof\n\n- Command or inspection: QA step reported PASS (simulated)\n- Result: PASS\n\n"
+        "## Negative Proof\n\n- Regression or failure-mode check: reviewer verdict APPROVE (simulated)\n- Result: PASS\n\n"
+        "## Commands Run\n\n```text\ndry-run verification\n```\n\n"
+        "## Skipped Checks\n\n- Check: real command execution\n- Reason: dry run\n- Residual risk: none for a rehearsal\n\n"
+        "## Diff Risk Notes\n\n- Risk: none (no changes made)\n- Mitigation: dry run\n\n"
+        "## Memory Candidates\n\n- Candidate: none\n- Source: dry run\n- Confidence: n/a\n"
+    ),
+}
+
+
+DRY_RUN_FAILURES = {
+    "researcher": "",
+    "worker": "BLOCKED: simulated failure for testing\n",
+    "qa": "QA: FAIL\n- simulated check -> FAIL (forced by AGENT_HARNESS_ORCH_FAIL_STEPS)\n",
+    "reviewer": "VERDICT: REQUEST-CHANGES\n\n1. high src/x:1 simulated finding; minimal fix: none (test).\n",
+    "security": "VERDICT: BLOCKING-FINDINGS\n\n1. high src/x:1 simulated attack path; remediation: none (test).\n",
+    "synthesizer": "",
+}
+
+
+def pick_orchestration_agent(config: dict[str, Any], requested: str | None, *, dry_run: bool) -> str:
+    if requested:
+        return requested
+    configured = config.get("orchestration", {}).get("agent") if isinstance(config.get("orchestration"), dict) else None
+    if configured:
+        return str(configured)
+    for name, probe in [("codex", "codex"), ("claude", "claude"), ("cursor", "cursor-agent"), ("cursor", "agent")]:
+        if command_available(probe):
+            return name
+    if dry_run:
+        return "codex"
+    raise HarnessError("No peer agent CLI found (codex/claude/cursor). Install one or use --dry-run.")
+
+
+def step_prompt(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, Any], repo_path: str, retry_context: list[str]) -> str:
+    task_path = task_dir(root, task_id)
+    dep_outputs = []
+    for dep in step["depends_on"]:
+        final = orchestration_dir(root, task_id) / "steps" / dep / "final.md"
+        if final.exists():
+            dep_outputs.append(f"- {dep}: {final}")
+    lines = [
+        role_contract(root, step["role"]).strip(),
+        "",
+        "## Step Assignment",
+        f"- Harness task: {task_id}",
+        f"- Step id: {step['id']} (attempt {step['attempts'] + 1})",
+        f"- Step goal: {step['goal']}",
+        f"- Task packet: {task_path / 'packet.md'}",
+        f"- Repo/worktree: {repo_path}",
+    ]
+    if dep_outputs:
+        lines.append("- Outputs from completed dependency steps (read them):")
+        lines.extend(f"  {item}" for item in dep_outputs)
+    if retry_context:
+        lines.append("- This is a retry. Address these findings first:")
+        lines.extend(f"  {item}" for item in retry_context)
+    lines.extend(["", "Your final message is parsed by a deterministic conductor. Follow the role's output format exactly."])
+    return "\n".join(lines)
+
+
+def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, Any], agent: str, cwd: Path, timeout: int, dry_run: bool, retry_context: list[str]) -> str:
+    step_dir = orchestration_dir(root, task_id) / "steps" / step["id"]
+    step_dir.mkdir(parents=True, exist_ok=True)
+    repo_path = str(cwd)
+    prompt = step_prompt(root, task_id, plan, step, repo_path, retry_context)
+    assert_no_sensitive_text(root, prompt, "orchestration step prompt")
+    (step_dir / "prompt.md").write_text(prompt if prompt.endswith("\n") else prompt + "\n")
+    if dry_run:
+        forced_failures = {item.strip() for item in os.environ.get("AGENT_HARNESS_ORCH_FAIL_STEPS", "").split(",") if item.strip()}
+        if step["id"] in forced_failures and step["attempts"] < int(os.environ.get("AGENT_HARNESS_ORCH_FAIL_ATTEMPTS", "99")):
+            output = DRY_RUN_FAILURES.get(step["role"], "")
+        else:
+            output = DRY_RUN_OUTPUTS.get(step["role"], "ok\n")
+        (step_dir / "final.md").write_text(output)
+        write_json(step_dir / "metadata.json", {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": True, "ok": True, "finished_at": utc_now()})
+        return output
+    command = [str(wrapper_for(root, agent)), "--task", task_id]
+    if agent == "codex":
+        command += ["exec", "--output-last-message", str(step_dir / "final.md"), prompt]
+    else:
+        command += ["-p", prompt]
+    result = run_text(command, cwd=cwd, timeout=timeout)
+    (step_dir / "stdout.txt").write_text(result.stdout)
+    (step_dir / "stderr.txt").write_text(result.stderr)
+    final = step_dir / "final.md"
+    if not final.exists() or not final.read_text(errors="replace").strip():
+        final.write_text(result.stdout or result.stderr or "")
+    write_json(step_dir / "metadata.json", {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": False, "returncode": result.returncode, "ok": result.returncode == 0, "finished_at": utc_now()})
+    if result.returncode != 0:
+        raise HarnessError(f"step {step['id']} agent process failed (rc={result.returncode}): {result.stderr.strip()[:300]}")
+    return final.read_text(errors="replace")
+
+
+def step_gate(step: dict[str, Any], output: str) -> tuple[bool, str]:
+    """Deterministic verdict extraction per role. Returns (passed, verdict)."""
+    first = next((line.strip() for line in output.splitlines() if line.strip()), "")
+    role = step["role"]
+    if role == "qa":
+        if first.startswith("QA: PASS"):
+            return True, "QA: PASS"
+        return False, first if first.startswith("QA:") else "QA: FAIL (unparseable report)"
+    if role == "reviewer":
+        if first.startswith("VERDICT: APPROVE"):
+            return True, first
+        return False, first if first.startswith("VERDICT:") else "VERDICT: REQUEST-CHANGES (unparseable verdict)"
+    if role == "security":
+        if first.startswith("VERDICT: NO-BLOCKING-FINDINGS"):
+            return True, first
+        return False, first if first.startswith("VERDICT:") else "VERDICT: BLOCKING-FINDINGS (unparseable verdict)"
+    if role == "worker":
+        if "BLOCKED:" in output[:2000]:
+            return False, "BLOCKED"
+        return True, "RESULT"
+    return bool(output.strip()), "ok" if output.strip() else "empty output"
+
+
+def downstream_ids(steps: list[dict[str, Any]], origin: str) -> set[str]:
+    affected = {origin}
+    changed = True
+    while changed:
+        changed = False
+        for step in steps:
+            if step["id"] not in affected and any(dep in affected for dep in step["depends_on"]):
+                affected.add(step["id"])
+                changed = True
+    return affected
+
+
+def upstream_worker_id(steps: list[dict[str, Any]], from_id: str) -> str | None:
+    by_id = {step["id"]: step for step in steps}
+    queue = list(by_id[from_id]["depends_on"]) if from_id in by_id else []
+    seen: set[str] = set()
+    workers: list[str] = []
+    while queue:
+        current = queue.pop()
+        if current in seen or current not in by_id:
+            continue
+        seen.add(current)
+        if by_id[current]["role"] == "worker":
+            workers.append(current)
+        queue.extend(by_id[current]["depends_on"])
+    return workers[0] if workers else None
+
+
+def orchestrate_plan(args: argparse.Namespace) -> int:
+    root = runtime_root(args)
+    task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
+    manifest = load_json(task_dir(root, task_id) / "task.json", {})
+    if not manifest:
+        raise HarnessError(f"Task not found: {task_id}")
+    config = load_config(root)
+    agent = pick_orchestration_agent(config, args.agent, dry_run=args.dry_run)
+    risk = str(manifest.get("risk", "auto"))
+    max_steps = args.max_steps
+    if args.dry_run:
+        steps = normalize_steps(default_plan_steps(risk), max_steps)
+        planner_note = "dry-run default plan"
+    else:
+        packet = (task_dir(root, task_id) / "packet.md").read_text(errors="replace")[:8000]
+        prompt = "\n".join(
+            [
+                role_contract(root, "planner").strip(),
+                "",
+                f"Maximum steps: {max_steps}.",
+                f"Task risk level: {risk}. Include a security step for yellow/red/high/critical risk.",
+                "",
+                "## Task Packet",
+                packet,
+            ]
+        )
+        step_dir = orchestration_dir(root, task_id) / "steps" / "plan"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / "prompt.md").write_text(prompt + "\n")
+        command = [str(wrapper_for(root, agent)), "--task", task_id]
+        if agent == "codex":
+            command += ["exec", "--output-last-message", str(step_dir / "final.md"), prompt]
+        else:
+            command += ["-p", prompt]
+        result = run_text(command, cwd=expand(manifest.get("repo_path", str(Path.cwd()))), timeout=args.step_timeout)
+        output = (step_dir / "final.md").read_text(errors="replace") if (step_dir / "final.md").exists() else result.stdout
+        (step_dir / "final.md").write_text(output if output.endswith("\n") else output + "\n")
+        try:
+            steps = parse_planner_steps(output, max_steps)
+            planner_note = f"planner:{agent}"
+        except HarnessError as exc:
+            steps = normalize_steps(default_plan_steps(risk), max_steps)
+            planner_note = f"fallback default plan ({exc})"
+    plan = {"task_id": task_id, "created_at": utc_now(), "planner": planner_note, "agent": agent, "steps": steps}
+    save_plan(root, task_id, plan)
+    orch_ledger(root, task_id, "plan-created", planner=planner_note, steps=[step["id"] for step in steps])
+    data = {"ok": True, "task_id": task_id, "planner": planner_note, "steps": [{"id": s["id"], "role": s["role"], "depends_on": s["depends_on"]} for s in steps], "plan": str(orchestration_dir(root, task_id) / "plan.json")}
+    print_json(data) if args.json else print(f"Planned {len(steps)} steps for {task_id} ({planner_note})")
+    return 0
+
+
+def quiet_call(func: Callable[[argparse.Namespace], int], ns: argparse.Namespace) -> int:
+    """Run an internal CLI function while swallowing its stdout (keeps --json output a single document)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return func(ns)
+
+
+def orchestrate_run(args: argparse.Namespace) -> int:
+    root = runtime_root(args)
+    task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
+    manifest = load_json(task_dir(root, task_id) / "task.json", {})
+    if not manifest:
+        raise HarnessError(f"Task not found: {task_id}")
+    if not (orchestration_dir(root, task_id) / "plan.json").exists():
+        quiet_call(orchestrate_plan, argparse.Namespace(runtime_root=str(root), task_id=task_id, agent=args.agent, dry_run=args.dry_run, max_steps=args.max_steps, step_timeout=args.step_timeout, json=False))
+    plan = load_plan(root, task_id)
+    steps = plan["steps"]
+    config = load_config(root)
+    agent = pick_orchestration_agent(config, args.agent, dry_run=args.dry_run)
+    worktree = Path(str(manifest.get("worktree", "")))
+    cwd = worktree if worktree.is_dir() else expand(str(manifest.get("repo_path", Path.cwd())))
+    by_id = {step["id"]: step for step in steps}
+
+    # Watchdog (resume safety): a step left "running" by a crashed conductor is retried.
+    for step in steps:
+        if step["status"] == "running":
+            step["status"] = "pending"
+            orch_ledger(root, task_id, "step-requeued-stale", step=step["id"])
+
+    iterations = 0
+    while iterations < args.max_iterations:
+        iterations += 1
+        pending = [s for s in steps if s["status"] == "pending"]
+        if not pending:
+            break
+        ready = [s for s in pending if all(by_id[dep]["status"] == "done" for dep in s["depends_on"])]
+        if not ready:
+            break  # blocked or failed dependencies
+        read_only = [s for s in ready if s["role"] in ORCH_READ_ONLY_ROLES]
+        writers = [s for s in ready if s["role"] not in ORCH_READ_ONLY_ROLES]
+        batch = read_only if read_only else writers[:1]
+        for step in batch:
+            step["status"] = "running"
+            step["started_at"] = utc_now()
+            orch_ledger(root, task_id, "step-started", step=step["id"], role=step["role"], attempt=step["attempts"] + 1)
+        save_plan(root, task_id, plan)
+
+        def run_one(step: dict[str, Any]) -> tuple[dict[str, Any], bool, str, str]:
+            retry_context = []
+            if step["attempts"] > 0:
+                for other in steps:
+                    if other["role"] in {"reviewer", "security", "qa"} and other.get("verdict") and not str(other.get("verdict", "")).startswith(("VERDICT: APPROVE", "VERDICT: NO-BLOCKING", "QA: PASS")):
+                        retry_context.append(f"{other['id']}: {orchestration_dir(root, task_id) / 'steps' / other['id'] / 'final.md'}")
+            try:
+                output = dispatch_step(root, task_id, plan, step, agent, cwd, args.step_timeout, args.dry_run, retry_context)
+                passed, verdict = step_gate(step, output)
+                return step, passed, verdict, ""
+            except Exception as exc:
+                return step, False, "dispatch-error", str(exc)[:300]
+
+        if len(batch) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(ORCH_MAX_PARALLEL, len(batch))) as pool:
+                results = list(pool.map(run_one, batch))
+        else:
+            results = [run_one(batch[0])]
+
+        for step, passed, verdict, error in results:
+            step["attempts"] += 1
+            step["verdict"] = verdict
+            step["finished_at"] = utc_now()
+            if passed:
+                step["status"] = "done"
+                orch_ledger(root, task_id, "step-done", step=step["id"], verdict=verdict)
+                continue
+            orch_ledger(root, task_id, "step-failed", step=step["id"], verdict=verdict, error=error)
+            # Gate failure: bounce the responsible worker and everything downstream (bounded fix loop).
+            origin = step["id"] if step["role"] == "worker" else (upstream_worker_id(steps, step["id"]) or step["id"])
+            origin_step = by_id[origin]
+            if origin_step["attempts"] >= args.max_attempts or step["attempts"] > args.max_attempts:
+                step["status"] = "failed" if step["id"] == origin else step["status"]
+                origin_step["status"] = "blocked"
+                for affected_id in downstream_ids(steps, origin) - {origin}:
+                    if by_id[affected_id]["status"] != "done" or affected_id == step["id"]:
+                        by_id[affected_id]["status"] = "blocked"
+                orch_ledger(root, task_id, "run-blocked", origin=origin, reason=f"max attempts ({args.max_attempts}) exhausted")
+            else:
+                for affected_id in downstream_ids(steps, origin):
+                    affected = by_id[affected_id]
+                    if affected["status"] in {"done", "failed", "running", "pending"}:
+                        affected["status"] = "pending"
+                orch_ledger(root, task_id, "fix-loop", origin=origin, triggered_by=step["id"])
+        save_plan(root, task_id, plan)
+        quiet_call(record_progress, argparse.Namespace(runtime_root=str(root), task_id=task_id, note=f"Orchestration iteration {iterations}: " + ", ".join(f"{s['id']}={s['status']}" for s in steps), json=True))
+
+    done = all(step["status"] == "done" for step in steps)
+    blocked = [step["id"] for step in steps if step["status"] in {"blocked", "failed"}]
+    finished = False
+    evidence_ok = False
+    if done:
+        synth = next((step for step in reversed(steps) if step["role"] == "synthesizer"), None)
+        if synth:
+            synth_output = (orchestration_dir(root, task_id) / "steps" / synth["id"] / "final.md").read_text(errors="replace")
+            if synth_output.strip().startswith("## Summary") or "## Positive Proof" in synth_output:
+                header = f"# Evidence: {task_id}\n\n"
+                body = synth_output if synth_output.lstrip().startswith("#") and not synth_output.lstrip().startswith("## ") else header + synth_output
+                assert_no_sensitive_text(root, body, "orchestrated evidence")
+                (task_dir(root, task_id) / "evidence.md").write_text(body if body.endswith("\n") else body + "\n")
+        evidence_ok = quiet_call(evidence_doctor, argparse.Namespace(runtime_root=str(root), task_id=task_id, json=True)) == 0
+        if evidence_ok and not args.no_finish:
+            finished = quiet_call(finish_task, argparse.Namespace(runtime_root=str(root), task_id=task_id, force=False, json=True)) == 0
+    orch_ledger(root, task_id, "run-complete", done=done, blocked=blocked, iterations=iterations, evidence_ok=evidence_ok, finished=finished)
+    data = {
+        "ok": done and (evidence_ok or args.no_finish),
+        "task_id": task_id,
+        "iterations": iterations,
+        "steps": [{"id": s["id"], "role": s["role"], "status": s["status"], "attempts": s["attempts"], "verdict": s.get("verdict")} for s in steps],
+        "blocked": blocked,
+        "evidence_ok": evidence_ok,
+        "finished": finished,
+        "next": "done" if finished else ("review blocked steps in the ledger, then rerun orchestrate run" if blocked else ("evidence needs attention before finish" if done else "rerun orchestrate run to continue")),
+    }
+    print_json(data) if args.json else print(json.dumps(data, indent=2))
+    return 0 if data["ok"] else 1
+
+
+def orchestrate_status(args: argparse.Namespace) -> int:
+    root = runtime_root(args)
+    task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
+    plan = load_json(orchestration_dir(root, task_id) / "plan.json", {})
+    ledger_path = orchestration_dir(root, task_id) / "ledger.jsonl"
+    events = []
+    if ledger_path.exists():
+        events = [json.loads(line) for line in ledger_path.read_text(errors="replace").splitlines() if line.strip()][-20:]
+    print_json({"ok": True, "task_id": task_id, "plan": plan, "recent_events": events})
+    return 0
+
+
 def validate_pr_source(value: str) -> str:
     if value.startswith("https://"):
         if not re.search(r"/pull/\d+$", value):
@@ -2642,6 +3109,9 @@ def collect_self_check(root: Path, source_root: Path, *, skip_mcp: bool = False)
             failures.append(f"missing runtime file: {rel}")
         elif not os.access(path, os.X_OK):
             failures.append(f"runtime file is not executable: {rel}")
+    for rel in ["roles/planner.md", "roles/worker.md", "roles/qa.md", "roles/reviewer.md", "roles/security.md", "roles/synthesizer.md", "roles/researcher.md"]:
+        if not (root / rel).exists():
+            failures.append(f"missing runtime file: {rel}")
     if not config_path(root).exists():
         failures.append("missing config.json")
     config = load_config(root)
@@ -2995,6 +3465,31 @@ def build_parser() -> argparse.ArgumentParser:
     vg.add_argument("--record", action="store_true", help="Append the result to evals/results/gate-runs.jsonl")
     vg.add_argument("--json", action="store_true")
     vg.set_defaults(func=verify_gates)
+
+    orch = sub.add_parser("orchestrate", help="Autonomous role-based conductor: plan, run gated steps, report status")
+    orch_sub = orch.add_subparsers(dest="orchestrate_cmd", required=True)
+    op = orch_sub.add_parser("plan", help="Decompose the task into role steps (planner agent, with deterministic fallback)")
+    op.add_argument("task_id", nargs="?", default="latest")
+    op.add_argument("--agent", choices=["codex", "claude", "cursor"])
+    op.add_argument("--max-steps", type=int, default=12)
+    op.add_argument("--step-timeout", type=int, default=600)
+    op.add_argument("--dry-run", action="store_true")
+    op.add_argument("--json", action="store_true")
+    op.set_defaults(func=orchestrate_plan)
+    orun = orch_sub.add_parser("run", help="Run the plan to completion: gated steps, bounded fix loops, evidence, finish")
+    orun.add_argument("task_id", nargs="?", default="latest")
+    orun.add_argument("--agent", choices=["codex", "claude", "cursor"])
+    orun.add_argument("--max-iterations", type=int, default=20)
+    orun.add_argument("--max-attempts", type=int, default=2)
+    orun.add_argument("--max-steps", type=int, default=12)
+    orun.add_argument("--step-timeout", type=int, default=600)
+    orun.add_argument("--no-finish", action="store_true", help="Stop before finish_task even when evidence passes")
+    orun.add_argument("--dry-run", action="store_true")
+    orun.add_argument("--json", action="store_true")
+    orun.set_defaults(func=orchestrate_run)
+    ost = orch_sub.add_parser("status", help="Show plan state and recent ledger events")
+    ost.add_argument("task_id", nargs="?", default="latest")
+    ost.set_defaults(func=orchestrate_status)
     return parser
 
 

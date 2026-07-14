@@ -11,6 +11,10 @@ Use this harness for non-trivial agentic engineering work in the configured work
 5. Curated local memory.
 6. Chat history.
 
+## Autonomous Orchestration
+
+For multi-step work the human wants done end-to-end (not steered), prefer the conductor: `orchestrate_plan` then `orchestrate_run` (MCP) or `harness orchestrate run <task>`. It decomposes the packet into role steps (researcher/worker/qa/reviewer/security/synthesizer), gates every transition on parsed verdicts, retries through bounded fix loops, and finishes through the evidence doctor — or ends `blocked` with a report for the human. Use plain task flow below for small or interactive work.
+
 ## Task Flow
 
 - Start or resume a task through MCP (`start_task` / `resume_task`) or the runtime CLI (`bin/harness`).

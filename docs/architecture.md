@@ -11,7 +11,8 @@ Runtime state is intentionally excluded from the source repo. Tasks, worktrees, 
 ## Core surfaces
 
 - CLI: `bin/agent-harness` (and the installed backend `<runtime>/bin/harness`)
-- MCP server: `<runtime>/mcp/server.mjs` (26 tools; control plane, not a generic shell)
+- MCP server: `<runtime>/mcp/server.mjs` (29 tools; control plane, not a generic shell)
+- Orchestration conductor: `orchestrate plan|run|status` over `<runtime>/roles/*.md` contracts and a per-task `orchestration/` ledger (see [Orchestration](orchestration.md))
 - Policy engine: `<runtime>/hooks/pre-tool-policy.py` — single decision core for every tool surface
 - Gate bridges: Claude settings hooks (direct), `<runtime>/hooks/cursor-bridge.py`, `<runtime>/mcp/opencode-plugin.mjs` (rendered to opencode's plugins dir), `<runtime>/mcp/pi-extension.ts` (rendered to pi's extensions dir)
 - Agent wrappers: `<runtime>/bin/ah-codex`, `ah-claude`, `ah-cursor` (env scrub + task binding for headless peer lanes)

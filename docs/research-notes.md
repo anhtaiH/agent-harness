@@ -60,6 +60,19 @@ Patterns the harness aligns with: orchestrator-worker fan-out with independent v
 - https://ghuntley.com/ralph/
 - https://github.com/gastownhall/beads
 
+The 2026 wave made this concrete, and `harness orchestrate` is the local translation of three systems:
+
+- OpenAI's Symphony spec (April 2026): an issue tracker as the agent control plane — poll ready work, isolated workspace per task, dispatch to completion, restart stalls, watch CI, human review at the end. Locally: `plan.json` + `ledger.jsonl` are the tracker, the conductor is the poller/watchdog.
+- Steve Yegge's Gas Town (January 2026): Overseer → Mayor → Polecats/Witness/Refinery/Deacon role fleet over beads. Locally: deterministic conductor as Mayor, role contracts in `roles/*.md`, one-writer serialization as the Refinery, stale-step requeue as the Deacon.
+- GPT-5.6 Sol Ultra (July 2026): model-native dynamic decomposition — the planner decides the role fan-out per task. Locally: the planner role emits the step graph (validated, capped, cycle-checked), with a deterministic fallback plan.
+
+- https://openai.com/index/open-source-codex-orchestration-symphony/
+- https://www.infoq.com/news/2026/05/openai-symphony-agents/
+- https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04
+- https://yegge.ai/gastown
+- https://openai.com/index/gpt-5-6/
+- https://www.marktechpost.com/2026/07/09/openai-releases-gpt-5-6-a-three-tier-model-family-with-programmatic-tool-calling/
+
 ## Ecosystem: personal/meta harnesses
 
 Comparable projects: obra/superpowers (skills + methodology, multi-harness plugin), affaan-m/ECC, wshobson/agents, SuperClaude, ruvnet/ruflo, buildermethods/agent-os, steipete/agent-scripts (canonical rules + per-tool symlink mirrors), the dotagents family (`.agents/` as source of truth), and danielmiessler's LifeOS ("paste this URL into your agent" install). Shared traits the harness adopts: agent-prompt install with deterministic scripts underneath, idempotent managed edits with backups and full uninstall, skills as the packaging unit (Agent Skills standard), doctor/self-check commands, and cross-tool adapters from one canonical source.

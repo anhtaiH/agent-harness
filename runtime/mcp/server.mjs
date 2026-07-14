@@ -98,6 +98,9 @@ const toolNames = [
   "profile_generate",
   "self_check",
   "verify_gates",
+  "orchestrate_plan",
+  "orchestrate_run",
+  "orchestrate_status",
 ];
 const resourceUris = ["agent-harness://tasks/latest", "agent-harness://dashboard", "agent-harness://memory/index"];
 const promptNames = ["start-from-description", "resume-latest", "finish-with-evidence", "review-pr"];
@@ -292,6 +295,24 @@ server.addTool({
   description: "Prove the guardrail hooks fire: run canned allow/ask/deny payloads through every policy hook and return the case-by-case results.",
   parameters: z.object({ record: z.boolean().optional() }),
   execute: async (args) => runHarness(["verify-gates", ...(args.record ? ["--record"] : []), "--json"], { json: true, timeoutMs: 120000 }),
+});
+server.addTool({
+  name: "orchestrate_plan",
+  description: "Decompose a harness task into a role-based step plan (planner agent with deterministic fallback). Steps: researcher/worker/qa/reviewer/security/synthesizer.",
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_steps: z.number().int().min(3).max(24).optional(), dry_run: z.boolean().optional() }),
+  execute: async (args) => runHarness(["orchestrate", "plan", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_steps ? ["--max-steps", String(args.max_steps)] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 900000 }),
+});
+server.addTool({
+  name: "orchestrate_run",
+  description: "Run the orchestration plan autonomously: gated role steps (QA must PASS, reviewer must APPROVE, security must clear), bounded fix loops, then evidence and finish. Long-running.",
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional() }),
+  execute: async (args) => runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_iterations ? ["--max-iterations", String(args.max_iterations)] : []), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), ...(args.no_finish ? ["--no-finish"] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 3600000 }),
+});
+server.addTool({
+  name: "orchestrate_status",
+  description: "Show the orchestration plan state and recent ledger events for a task.",
+  parameters: z.object({ task_id: taskId.optional() }),
+  execute: async (args) => runHarness(["orchestrate", "status", args.task_id || "latest"], { json: true }),
 });
 
 server.addResource({ uri: "agent-harness://tasks/latest", name: "Latest Agent Harness Task", mimeType: "text/markdown", load: async () => ({ text: await readIfExists(path.join(STATUS_DIR, "latest.md"), "No latest task status has been generated yet.\n") }) });

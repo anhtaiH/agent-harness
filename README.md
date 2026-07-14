@@ -43,6 +43,17 @@ Run the proof any time:
 agent-harness verify-gates
 ```
 
+## Autonomous orchestration
+
+For work you want done end-to-end rather than steered, the harness ships a deterministic conductor in the shape of OpenAI's Symphony spec and Gas Town-style role fleets, with Sol-Ultra-style dynamic decomposition:
+
+```bash
+harness start --prompt "Fix ENG-123" --risk yellow
+harness orchestrate run latest
+```
+
+A planner agent decomposes the packet into role steps (researcher → worker → QA → reviewer [+ security on risky tasks] → synthesizer); the conductor executes them from a file-based ledger with hard gates between transitions — QA must report `PASS`, the reviewer must `APPROVE`, security must find nothing blocking — bounded fix loops on failure, parallel read-only lanes, one writer at a time, and a crash-safe resume. Success ends in doctor-validated evidence and `finish_task`; exhausted budgets end `blocked` with a report instead of a forced finish. Humans set intent and review outcomes; the middle is autonomous, and every role agent still runs under the policy gates. See [docs/orchestration.md](docs/orchestration.md).
+
 ## Tool support
 
 | Surface | Instructions | MCP | Policy gates | Skills | Subagents |

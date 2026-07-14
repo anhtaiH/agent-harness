@@ -63,6 +63,23 @@ node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" upgrade --dry-run --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" uninstall --restore-adapters --dry-run --json >/dev/null
 
+# Orchestration conductor: dynamic plan, gated dry-run to autonomous finish
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated demo task" --task-id orch-task --risk red --mode run --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate plan orch-task --dry-run --json | grep -q '"security-review"'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-task --dry-run --json | grep -q '"finished": true'
+test -f "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
+grep -q "run-complete" "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate status orch-task | grep -q '"plan"'
+# Fix loop recovers from a transient QA failure
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated fix-loop task" --task-id orch-fix --risk green --mode run --json >/dev/null
+AGENT_HARNESS_ORCH_FAIL_STEPS=verify AGENT_HARNESS_ORCH_FAIL_ATTEMPTS=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-fix --dry-run --json | grep -q '"finished": true'
+# Persistent reviewer rejection ends blocked, never finishes
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated blocked task" --task-id orch-block --risk green --mode run --json >/dev/null
+if AGENT_HARNESS_ORCH_FAIL_STEPS=review "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-block --dry-run --max-attempts 2 --json | grep -q '"finished": true'; then
+  echo "blocked orchestration run must not finish the task" >&2
+  exit 1
+fi
+
 SKIP_RUNTIME="$TMP_DIR/runtime-skip-deps"
 npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --json >/dev/null
 "$TMP_DIR/bin-skip/agent-harness" where --json | grep -q '"installed": true'
