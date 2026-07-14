@@ -39,13 +39,21 @@ harness orchestrate status latest                            # ledger + step sta
 
 `orchestrate run` loops: pick ready steps → dispatch role agents (via the env-scrubbed ah-* wrappers, so every tool call passes the policy gates) → parse verdicts → advance. On a failed gate (QA FAIL, REQUEST-CHANGES, BLOCKING-FINDINGS) it bounces the responsible worker and everything downstream — a bounded fix loop with the failing findings injected into the worker's retry prompt. When all steps are done, the synthesizer's sections become `evidence.md`, the evidence doctor validates them, and the task finishes.
 
+## Deterministic verification (not agent self-report)
+
+A qa agent printing `QA: PASS` is not trusted on its own. Two deterministic layers back it:
+
+- **Checks ledger.** `harness run-check <task> -- <command>` executes a command and records `{command, returncode, output_sha256, output_tail}` to `tasks/<id>/checks.jsonl`. The qa role is instructed to record checks this way.
+- **Conductor verify command.** Give a task a canonical command at start: `harness start --prompt … --verify-cmd "python3 -m unittest discover -s tests"`. Before a real run may finish, the conductor executes it itself, records the transcript, and blocks on a non-zero exit — routing the failure back through the worker fix loop. No agent output can substitute for the real exit code.
+- **Strict evidence.** For yellow/red/high/critical tasks, `evidence doctor` (and `finish`) require a recorded *passing* check, and reject a `Result: PASS` claim that has none. Omitted results are written as `NOT VERIFIED`, never fabricated as `PASS`.
+
 ## Budgets and safety
 
 - `--max-iterations` (default 20), `--max-attempts` per fix origin (default 2), `--step-timeout` (default 600s), `--max-steps` plan cap (default 12).
-- Exhausted budgets end the run `blocked` with an actionable `next` — never a forced finish. A blocked run is a report to the human, not a failure to hide.
-- Crash-safe: state lives in `plan.json`/`ledger.jsonl`; a step left `running` by a dead conductor is re-queued on the next run (watchdog).
-- Every role agent runs under the same policy gates as interactive sessions: secrets, remote-exec piping, prod actions, and un-intended connector writes are denied inside orchestration too.
-- `--dry-run` exercises the full state machine with canned verdicts (used by the test suite; `AGENT_HARNESS_ORCH_FAIL_STEPS` forces failures to test the fix loop and blocking).
+- Exhausted budgets end the run `blocked` with an actionable `next` that names `--retry-blocked` — never a forced finish. `harness orchestrate run <task> --retry-blocked` resets blocked/failed steps to pending after you fix the cause, so a stuck plan is recoverable without hand-editing state.
+- Crash-safe: state lives in `plan.json`/`ledger.jsonl` (written atomically via temp-file + rename); a step left `running` by a dead conductor is re-queued on the next run (watchdog). A plan referencing an unknown dependency is rejected rather than crashing mid-run.
+- Every role agent runs under the same policy gates as interactive sessions: secrets, remote-exec piping, prod actions, and un-intended connector writes are denied inside orchestration too. Role prompts forbid agents from touching the task lifecycle (start/resume/finish) — the conductor owns it.
+- `--dry-run` is a **rehearsal**: it never writes the real `evidence.md` or finishes the task (it previews under `orchestration/dry-run/`). `AGENT_HARNESS_ORCH_FAIL_STEPS` forces failures for testing; `AGENT_HARNESS_ORCH_DRYRUN_FINISH=1` re-enables the finish path for the deterministic suite.
 
 ## Choosing agents
 

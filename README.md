@@ -84,13 +84,15 @@ Review PR 12345 quickly with the harness. Draft only high-confidence comments an
 ## Daily commands (humans)
 
 ```bash
-agent-harness doctor          # health check: files, MCP self-test, leak scan
+agent-harness doctor          # health check: files, MCP self-test, leak scan, stale-task/size warnings
 agent-harness verify-gates    # prove the guardrails fire
 agent-harness where           # what is installed, where
+agent-harness retro           # friction report: forced finishes, top gate denials, recurring failures
+agent-harness clean           # prune old finished tasks/backups under a retention policy (--dry-run first)
 agent-harness open            # dashboard
 agent-harness examples        # prompt ideas
-agent-harness upgrade         # refresh runtime from the package
-agent-harness uninstall --restore-adapters
+agent-harness upgrade         # refresh runtime + re-sync adapters from the package
+agent-harness uninstall       # removes runtime and restores adapters by default (--keep-adapters to opt out)
 ```
 
 Agents should use MCP tools or the runtime backend themselves; humans should not need to type backend paths during normal work.

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT", Path.home() / ".agent-harness" / "default")).expanduser()
+ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
 ACTIVE_TASK_TTL_HOURS = 24
 REQUIRED_HEADINGS = ["Summary", "Positive Proof", "Negative Proof", "Commands Run", "Skipped Checks", "Diff Risk Notes", "Memory Candidates"]
 

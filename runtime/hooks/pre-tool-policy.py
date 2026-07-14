@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import Any
 
 HOME = str(Path.home())
-ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT", Path.home() / ".agent-harness" / "default")).expanduser()
+# A hook script always lives at <runtime-root>/hooks/<script>, so its own
+# location is the source of truth for the runtime root. The env override wins
+# when the conductor or a wrapper sets it; the __file__ fallback keeps the gate
+# reading the CORRECT runtime for any workspace name (not the literal "default").
+ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
 
 SENSITIVE_PATH_RE = re.compile(
     r"(^|[/\s\"'=])("
@@ -158,7 +162,18 @@ def active_intent_exists(provider: str, operation_hint: str) -> bool:
     return False
 
 
-def emit(decision: str, reason: str) -> int:
+def log_decision(decision: str, reason: str, name: str) -> None:
+    """Record denials/asks so `harness retro` can surface top friction. Fail-open."""
+    try:
+        path = ROOT / "metrics" / "gate-denials.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            handle.write(json.dumps({"decision": decision, "reason": reason[:160], "tool": name[:80], "at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds")}) + "\n")
+    except Exception:
+        pass
+
+
+def emit(decision: str, reason: str, name: str = "") -> int:
     print(
         json.dumps(
             {
@@ -172,6 +187,7 @@ def emit(decision: str, reason: str) -> int:
     )
     if decision == "deny":
         print(reason, file=sys.stderr)
+        log_decision(decision, reason, name)
     return 0
 
 
@@ -220,7 +236,7 @@ def main() -> int:
         return 0
     if decision == "allow":
         return 0
-    return emit(decision, reason)
+    return emit(decision, reason, tool_name(payload))
 
 
 if __name__ == "__main__":

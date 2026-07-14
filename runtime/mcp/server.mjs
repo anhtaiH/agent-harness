@@ -78,6 +78,7 @@ const toolNames = [
   "read_artifact",
   "record_progress",
   "write_evidence",
+  "run_check",
   "evidence_doctor",
   "finish_task",
   "agent_capabilities",
@@ -95,6 +96,7 @@ const toolNames = [
   "external_write_doctor",
   "memory_query",
   "memory_candidate",
+  "memory_promote",
   "profile_generate",
   "self_check",
   "verify_gates",
@@ -208,12 +210,14 @@ server.addTool({
     kind: z.string().optional(),
     risk: z.string().optional(),
     mode: z.enum(["plan", "run", "yolo"]).optional(),
+    verify_cmd: z.string().optional(),
   }),
   execute: async (args) => {
     const command = ["start"];
     if (args.repo) command.push(args.repo);
     command.push("--prompt", args.description, "--kind", args.kind || "general", "--risk", args.risk || "auto", "--mode", args.mode || "run", "--json");
     if (args.task_id) command.push("--task-id", args.task_id);
+    if (args.verify_cmd) command.push("--verify-cmd", args.verify_cmd);
     return runHarness(command, { json: true });
   },
 });
@@ -248,17 +252,50 @@ server.addTool({
 
 server.addTool({
   name: "write_evidence",
-  description: "Write or replace task evidence.",
-  parameters: z.object({ task_id: taskId, content: safeText.optional(), summary: z.string().optional(), positive_proof: z.string().optional(), negative_proof: z.string().optional(), commands_run: z.string().optional() }),
+  description: "Write or replace task evidence. Omitted results are recorded as NOT VERIFIED, never fabricated as PASS. For strict (yellow/red) tasks, back PASS claims with a run_check transcript.",
+  parameters: z.object({
+    task_id: taskId,
+    content: safeText.optional(),
+    summary: z.string().optional(),
+    positive_proof: z.string().optional(),
+    positive_result: z.string().optional(),
+    negative_proof: z.string().optional(),
+    negative_result: z.string().optional(),
+    commands_run: z.string().optional(),
+    skipped_checks: z.string().optional(),
+    diff_risk_notes: z.string().optional(),
+    memory_candidates: z.string().optional(),
+  }),
   execute: async (args) => {
     const command = ["evidence", "write", args.task_id, "--json"];
-    if (args.content) command.push("--content", args.content);
-    if (args.summary) command.push("--summary", args.summary);
-    if (args.positive_proof) command.push("--positive-proof", args.positive_proof);
-    if (args.negative_proof) command.push("--negative-proof", args.negative_proof);
-    if (args.commands_run) command.push("--commands-run", args.commands_run);
+    for (const [flag, value] of [
+      ["--content", args.content],
+      ["--summary", args.summary],
+      ["--positive-proof", args.positive_proof],
+      ["--positive-result", args.positive_result],
+      ["--negative-proof", args.negative_proof],
+      ["--negative-result", args.negative_result],
+      ["--commands-run", args.commands_run],
+      ["--skipped-checks", args.skipped_checks],
+      ["--diff-risk-notes", args.diff_risk_notes],
+      ["--memory-candidates", args.memory_candidates],
+    ]) {
+      if (value) command.push(flag, value);
+    }
     return runHarness(command, { json: true });
   },
+});
+server.addTool({
+  name: "run_check",
+  description: "Run a verification command and record a tamper-evident transcript to the task's checks ledger. The deterministic anti-hallucination primitive: strict evidence must cite a passing check.",
+  parameters: z.object({ task_id: taskId, command: z.array(z.string()).min(1), timeout: z.number().int().min(1).max(3600).optional() }),
+  execute: async (args) => runHarness(["run-check", "--json", ...(args.timeout ? ["--timeout", String(args.timeout)] : []), args.task_id, "--", ...args.command], { json: true, timeoutMs: (args.timeout || 600) * 1000 + 10000 }),
+});
+server.addTool({
+  name: "memory_promote",
+  description: "Promote an inbox memory candidate into curated claims.jsonl (or failures.jsonl with failure=true).",
+  parameters: z.object({ inbox_file: z.string().optional(), claim: z.string().optional(), source: z.string().optional(), confidence: z.string().optional(), failure: z.boolean().optional(), remove: z.boolean().optional() }),
+  execute: async (args) => runHarness(["memory", "promote", ...(args.inbox_file ? [args.inbox_file] : []), ...(args.claim ? ["--claim", args.claim] : []), ...(args.source ? ["--source", args.source] : []), ...(args.confidence ? ["--confidence", args.confidence] : []), ...(args.failure ? ["--failure"] : []), ...(args.remove ? ["--remove"] : [])], { json: true }),
 });
 
 server.addTool({ name: "evidence_doctor", description: "Validate evidence for a task.", parameters: z.object({ task_id: taskId.optional() }), execute: async (args) => runHarness(["evidence", "doctor", args.task_id || "latest", "--json"], { json: true }) });

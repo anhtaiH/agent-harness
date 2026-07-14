@@ -48,6 +48,7 @@ MCP_TOOLS = [
     "read_artifact",
     "record_progress",
     "write_evidence",
+    "run_check",
     "evidence_doctor",
     "finish_task",
     "agent_capabilities",
@@ -65,6 +66,7 @@ MCP_TOOLS = [
     "external_write_doctor",
     "memory_query",
     "memory_candidate",
+    "memory_promote",
     "profile_generate",
     "self_check",
     "verify_gates",
@@ -156,8 +158,12 @@ def load_json(path: Path, default: Any) -> Any:
 
 
 def write_json(path: Path, data: Any) -> None:
+    # Atomic: write to a temp file in the same dir then os.replace, so a crash or
+    # a concurrent reader never sees a truncated plan.json/config.json/active-tasks.json.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
 
 
 def load_config(root: Path) -> dict[str, Any]:
@@ -752,7 +758,9 @@ HARNESS_HOOK_MARKERS = (
 
 
 def hook_command(root: Path, script: str) -> str:
-    return f"python3 {shlex_quote(str(root / 'hooks' / script))}"
+    # Bake the runtime root into the command so the hook reads the correct
+    # workspace even before its __file__ fallback; env override still wins.
+    return f"AGENT_HARNESS_ROOT={shlex_quote(str(root))} python3 {shlex_quote(str(root / 'hooks' / script))}"
 
 
 def is_harness_hook_entry(entry: Any) -> bool:
@@ -1437,13 +1445,22 @@ def uninstall(args: argparse.Namespace) -> int:
     if not root.exists():
         print_json({"ok": True, "removed": False, "runtime_root": str(root)}) if args.json else print(f"No runtime found: {root}")
         return 0
+    # Restore adapters by default: removing the runtime while ~/.claude/settings.json
+    # (and other tool configs) still point at its hook scripts would make those hooks
+    # exit non-zero on every tool call and brick the agent. Opt out only with --keep-adapters.
+    restore = not args.keep_adapters
     if args.dry_run:
-        data = {"ok": True, "dry_run": True, "would_remove": str(root), "would_restore_adapters": bool(args.restore_adapters)}
+        data = {"ok": True, "dry_run": True, "would_remove": str(root), "would_restore_adapters": restore}
     else:
-        restored = {"shims": restore_shims(root), "user_adapters": restore_user_adapters(root)} if args.restore_adapters else {"skipped": True}
+        restored = {"shims": restore_shims(root), "user_adapters": restore_user_adapters(root)} if restore else {"skipped": "kept by --keep-adapters"}
         shutil.rmtree(root)
         data = {"ok": True, "removed": True, "runtime_root": str(root), "restored_adapters": restored}
-    print_json(data) if args.json else print(data)
+    if args.json:
+        print_json(data)
+    elif args.dry_run:
+        print(f"Would remove {root} (restore adapters: {restore})")
+    else:
+        print(f"Removed runtime {root}. Adapters {'restored' if restore else 'kept (--keep-adapters)'}.")
     return 0
 
 
@@ -1570,9 +1587,13 @@ def upgrade(args: argparse.Namespace) -> int:
         data = {"ok": False, "phase": "npm-ci", "source_bundle": str(bundle), "dependency_install": deps, "fix": "Install npm or retry with --skip-deps."}
         print_json(data) if args.json else print_setup_failure(data)
         return 1
-    install_runtime_files(root, workspace, repo, default[0] if default else None, bundle)
+    install_data = install_runtime_files(root, workspace, repo, default[0] if default else None, bundle, write_adapters=False)
+    # Re-sync user-level adapters so newly shipped skills, subagents, hooks, and
+    # settings reach the agent surfaces; managed blocks and sha-tracked assets make
+    # this idempotent. Without this, `upgrade` silently leaves stale skills behind.
+    adapters = {"skipped": True} if args.no_adapters else install_user_adapters(root, install_data["config"], repo, force=False)
     check = collect_self_check(root, bundle, skip_mcp=args.skip_deps)
-    data = {"ok": check["ok"], "runtime_root": str(root), "source_bundle": str(bundle), "dependency_install": deps, "self_check": check}
+    data = {"ok": check["ok"], "runtime_root": str(root), "source_bundle": str(bundle), "dependency_install": deps, "adapters": summarize_user_adapters(adapters), "self_check": check}
     if args.json:
         print_json(data)
     else:
@@ -1870,6 +1891,8 @@ def start_task(args: argparse.Namespace) -> int:
         "created_at": utc_now(),
         "worktree": str(worktree_path),
     }
+    if getattr(args, "verify_cmd", None):
+        manifest["verify_cmd"] = args.verify_cmd
     write_json(task_path / "task.json", manifest)
     values = {
         "TASK_ID": task_id,
@@ -1966,6 +1989,67 @@ def record_progress(args: argparse.Namespace) -> int:
     return 0
 
 
+def checks_path(root: Path, task_id: str) -> Path:
+    return task_dir(root, task_id) / "checks.jsonl"
+
+
+def record_check(root: Path, task_id: str, command: str, returncode: int, output: str) -> dict[str, Any]:
+    record = {
+        "command": command,
+        "returncode": returncode,
+        "passed": returncode == 0,
+        "output_sha256": hashlib.sha256(output.encode(errors="replace")).hexdigest(),
+        "output_tail": output[-1200:],
+        "at": utc_now(),
+    }
+    append_jsonl(checks_path(root, task_id), record)
+    return record
+
+
+def load_checks(root: Path, task_id: str) -> list[dict[str, Any]]:
+    path = checks_path(root, task_id)
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(errors="replace").splitlines():
+        if line.strip():
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def run_check(args: argparse.Namespace) -> int:
+    """Execute a verification command and record a tamper-evident transcript.
+
+    This is the deterministic anti-hallucination primitive: evidence in strict
+    mode must cite recorded, passing checks, so an agent cannot claim "tests
+    pass" without a command that actually exited 0.
+    """
+    root = runtime_root(args)
+    task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
+    command = list(args.command or [])
+    while command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise HarnessError("run-check requires a command after `--`")
+    _, repo = resolve_repo(root, None) if load_config(root).get("repos") else (None, Path.cwd())
+    manifest = load_json(task_dir(root, task_id) / "task.json", {})
+    cwd = Path(str(manifest.get("worktree", ""))) if Path(str(manifest.get("worktree", ""))).is_dir() else expand(str(manifest.get("repo_path", repo)))
+    result = run_text(command, cwd=cwd, timeout=args.timeout)
+    output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+    record = record_check(root, task_id, shlex.join(command), result.returncode, output)
+    data = {"ok": record["passed"], "task_id": task_id, "command": record["command"], "returncode": record["returncode"], "checks": str(checks_path(root, task_id))}
+    if args.json:
+        print_json(data)
+    else:
+        print(f"[{'PASS' if record['passed'] else 'FAIL'}] rc={record['returncode']}: {record['command']}")
+        if not record["passed"]:
+            print(result.stdout[-1500:] or result.stderr[-1500:])
+    return 0 if record["passed"] else 1
+
+
 def evidence_text(args: argparse.Namespace) -> str:
     if args.content:
         return args.content
@@ -1980,12 +2064,14 @@ def evidence_text(args: argparse.Namespace) -> str:
             "## Positive Proof",
             "",
             f"- Command or inspection: {args.positive_proof or 'code/task inspection'}",
-            f"- Result: {args.positive_result or 'PASS'}",
+            # Never invent a passing result the agent did not assert. An omitted
+            # result is recorded honestly as NOT VERIFIED, not fabricated as PASS.
+            f"- Result: {args.positive_result or 'NOT VERIFIED'}",
             "",
             "## Negative Proof",
             "",
             f"- Regression or failure-mode check: {args.negative_proof or 'primary failure mode considered'}",
-            f"- Result: {args.negative_result or 'PASS'}",
+            f"- Result: {args.negative_result or 'NOT VERIFIED'}",
             "",
             "## Commands Run",
             "",
@@ -2032,12 +2118,55 @@ def evidence_failures(text: str) -> list[str]:
     return failures
 
 
+STRICT_RISK_LEVELS = {"yellow", "red", "high", "critical"}
+
+
+def strict_evidence_failures(root: Path, task_id: str, text: str) -> list[str]:
+    """Deterministic cross-checks that a claim is backed by a recorded, passing command.
+
+    Applied for higher-risk tasks (or --strict): an agent cannot assert PASS
+    without a `harness run-check` transcript that actually exited 0.
+    """
+    failures: list[str] = []
+    passing = [c for c in load_checks(root, task_id) if c.get("passed")]
+    asserts_pass = bool(re.search(r"^-?\s*Result:\s*PASS\b", text, re.M | re.I))
+    if asserts_pass and not passing:
+        failures.append(
+            "evidence asserts Result: PASS but no passing check is recorded. "
+            f"Run the verification via `harness run-check {task_id} -- <command>` so the claim is backed by a real exit code."
+        )
+    if not passing:
+        failures.append(
+            f"strict evidence requires at least one recorded passing check. Run `harness run-check {task_id} -- <verification command>`."
+        )
+    return failures
+
+
+def evidence_is_strict(root: Path, task_id: str, explicit: bool | None) -> bool:
+    if explicit is not None:
+        return explicit
+    manifest = load_json(task_dir(root, task_id) / "task.json", {})
+    return str(manifest.get("risk", "")).lower() in STRICT_RISK_LEVELS
+
+
+def collect_evidence_failures(root: Path, task_id: str, *, strict: bool | None = None) -> list[str]:
+    path = task_dir(root, task_id) / "evidence.md"
+    if not path.exists():
+        return ["missing evidence.md"]
+    text = path.read_text(errors="replace")
+    failures = evidence_failures(text)
+    if evidence_is_strict(root, task_id, strict):
+        failures.extend(strict_evidence_failures(root, task_id, text))
+    return failures
+
+
 def evidence_doctor(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
     path = task_dir(root, task_id) / "evidence.md"
-    failures = ["missing evidence.md"] if not path.exists() else evidence_failures(path.read_text(errors="replace"))
-    data = {"ok": not failures, "task_id": task_id, "failures": failures, "evidence": str(path)}
+    strict = True if getattr(args, "strict", False) else None
+    failures = collect_evidence_failures(root, task_id, strict=strict)
+    data = {"ok": not failures, "task_id": task_id, "strict": evidence_is_strict(root, task_id, strict), "failures": failures, "evidence": str(path)}
     print_json(data) if args.json else print("ok" if not failures else "\n".join(failures))
     return 0 if not failures else 2
 
@@ -2045,20 +2174,42 @@ def evidence_doctor(args: argparse.Namespace) -> int:
 def finish_task(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
-    doctor_args = argparse.Namespace(runtime_root=str(root), task_id=task_id, json=True)
     path = task_dir(root, task_id)
-    failures = evidence_failures((path / "evidence.md").read_text(errors="replace")) if (path / "evidence.md").exists() else ["missing evidence.md"]
+    failures = collect_evidence_failures(root, task_id)
     if failures and not args.force:
-        print_json({"ok": False, "task_id": task_id, "failures": failures})
+        print_json({"ok": False, "task_id": task_id, "failures": failures, "next": f"Fix the evidence, or run `harness run-check {task_id} -- <cmd>` for strict tasks; `--force` records an unverified finish."})
         return 2
+    # Harvest durable lessons from the evidence into the memory inbox so the
+    # knowledge loop is not purely manual. Human still promotes to claims.jsonl.
+    harvested = 0
+    if (path / "evidence.md").exists():
+        for candidate in extract_memory_candidates((path / "evidence.md").read_text(errors="replace")):
+            add_memory_candidate(root, candidate["claim"], candidate["source"] + f" (task {task_id})", candidate["confidence"])
+            harvested += 1
     manifest = load_json(path / "task.json", {})
+    forced = bool(failures and args.force)
     manifest["status"] = "finished"
     manifest["finished_at"] = utc_now()
+    manifest["forced_finish"] = forced
     write_json(path / "task.json", manifest)
     clear_active_task(root, task_id)
     write_status(root, task_id)
-    data = {"ok": True, "task_id": task_id, "task_dir": str(path), "evidence": str(path / "evidence.md")}
-    print_json(data) if args.json else print(f"Finished task {task_id}")
+    append_jsonl(
+        root / "metrics" / "runs.jsonl",
+        {
+            "task_id": task_id,
+            "risk": manifest.get("risk"),
+            "kind": manifest.get("kind"),
+            "status": "finished",
+            "forced": forced,
+            "unmet_at_finish": failures if forced else [],
+            "checks_passed": sum(1 for c in load_checks(root, task_id) if c.get("passed")),
+            "created_at": manifest.get("created_at"),
+            "finished_at": manifest["finished_at"],
+        },
+    )
+    data = {"ok": True, "task_id": task_id, "forced": forced, "memory_candidates_harvested": harvested, "task_dir": str(path), "evidence": str(path / "evidence.md")}
+    print_json(data) if args.json else print(f"Finished task {task_id}" + (" (forced; unverified)" if forced else ""))
     return 0
 
 
@@ -2254,6 +2405,8 @@ def normalize_steps(raw_steps: Any, max_steps: int) -> list[dict[str, Any]]:
             raise HarnessError(f"Unknown role: {role!r}")
         if not goal:
             raise HarnessError(f"Step {step_id} has no goal")
+        if len(goal) > 2000:
+            goal = goal[:2000]  # bound argv size; a step goal is a sentence, not a document
         if not isinstance(deps, list) or not all(isinstance(item, str) for item in deps):
             raise HarnessError(f"Step {step_id} has invalid depends_on")
         step = {"id": step_id, "role": role, "goal": goal, "depends_on": deps, "status": "pending", "attempts": 0, "verdict": None, "started_at": None, "finished_at": None}
@@ -2535,6 +2688,26 @@ def orchestrate_run(args: argparse.Namespace) -> int:
     cwd = worktree if worktree.is_dir() else expand(str(manifest.get("repo_path", Path.cwd())))
     by_id = {step["id"]: step for step in steps}
 
+    # Guard against a hand-edited plan referencing an unknown dependency (would
+    # otherwise KeyError deep in the loop and crash the run).
+    for step in steps:
+        for dep in step["depends_on"]:
+            if dep not in by_id:
+                raise HarnessError(f"plan step {step['id']} depends on unknown step {dep!r}; fix plan.json or re-plan")
+
+    # --retry-blocked: reset blocked/failed steps to pending so an operator can
+    # push a stuck plan forward instead of the run being a permanent no-op.
+    if getattr(args, "retry_blocked", False):
+        reset = [s["id"] for s in steps if s["status"] in {"blocked", "failed"}]
+        for step in steps:
+            if step["status"] in {"blocked", "failed"}:
+                step["status"] = "pending"
+        plan.pop("verify_blocked", None)
+        plan.pop("verify_passed", None)
+        if reset:
+            orch_ledger(root, task_id, "retry-blocked", reset=reset)
+        save_plan(root, task_id, plan)
+
     # Watchdog (resume safety): a step left "running" by a crashed conductor is retried.
     for step in steps:
         if step["status"] == "running":
@@ -2597,6 +2770,19 @@ def orchestrate_run(args: argparse.Namespace) -> int:
                     if by_id[affected_id]["status"] != "done" or affected_id == step["id"]:
                         by_id[affected_id]["status"] = "blocked"
                 orch_ledger(root, task_id, "run-blocked", origin=origin, reason=f"max attempts ({args.max_attempts}) exhausted")
+                # Record the failure so it can inform future runs (the knowledge loop).
+                append_jsonl(
+                    root / "memory" / "failures.jsonl",
+                    {
+                        "task_id": task_id,
+                        "origin_step": origin,
+                        "failing_step": step["id"],
+                        "verdict": step.get("verdict"),
+                        "goal": manifest.get("description", "")[:280],
+                        "final_md": str(orchestration_dir(root, task_id) / "steps" / step["id"] / "final.md"),
+                        "at": utc_now(),
+                    },
+                )
             else:
                 for affected_id in downstream_ids(steps, origin):
                     affected = by_id[affected_id]
@@ -2610,28 +2796,96 @@ def orchestrate_run(args: argparse.Namespace) -> int:
     blocked = [step["id"] for step in steps if step["status"] in {"blocked", "failed"}]
     finished = False
     evidence_ok = False
+    # A dry run is a rehearsal: never write the real evidence.md or finish the
+    # task, or it would destroy the evidentiary value of a real task. Preview
+    # the synthesized evidence under orchestration/dry-run/ instead. The
+    # AGENT_HARNESS_ORCH_DRYRUN_FINISH test knob re-enables the real finish path
+    # so the deterministic (no live agent) suite can exercise it end to end.
+    rehearsal = bool(args.dry_run) and os.environ.get("AGENT_HARNESS_ORCH_DRYRUN_FINISH") != "1"
+    # Record a check backing the gated qa step(s) so strict evidence is
+    # satisfiable for orchestrated tasks; provenance is labeled honestly.
+    if done and not rehearsal:
+        for step in steps:
+            if step["role"] == "qa" and step["status"] == "done":
+                qa_final = orchestration_dir(root, task_id) / "steps" / step["id"] / "final.md"
+                record_check(root, task_id, f"orchestrated-qa:{step['id']}", 0, qa_final.read_text(errors="replace") if qa_final.exists() else "")
+    # Deterministic verification: before a real run may finish, the conductor
+    # executes the task's canonical verify command itself and records the
+    # transcript. A qa agent that merely printed "QA: PASS" cannot get past this.
+    # Failure routes through the normal bounded fix loop (bounce the last worker),
+    # not a phantom step, so reruns actually re-do work rather than re-run the
+    # command forever.
+    verify_cmd = str(manifest.get("verify_cmd") or "")
+    if done and verify_cmd and not rehearsal and not plan.get("verify_passed"):
+        vresult = run_text(["bash", "-lc", verify_cmd], cwd=cwd, timeout=args.step_timeout)
+        voutput = (vresult.stdout or "") + (("\n" + vresult.stderr) if vresult.stderr else "")
+        record_check(root, task_id, verify_cmd, vresult.returncode, voutput)
+        orch_ledger(root, task_id, "verify-cmd", command=verify_cmd, returncode=vresult.returncode, passed=vresult.returncode == 0)
+        if vresult.returncode == 0:
+            plan["verify_passed"] = True
+            save_plan(root, task_id, plan)
+        else:
+            done = False
+            worker = upstream_worker_id(steps + [{"id": "__verify__", "role": "qa", "depends_on": [s["id"] for s in steps if s["role"] == "qa"] or [s["id"] for s in steps if s["role"] == "worker"]}], "__verify__")
+            verify_rounds = int(plan.get("verify_rounds", 0))
+            if worker and verify_rounds < args.max_attempts:
+                plan["verify_rounds"] = verify_rounds + 1
+                for affected_id in downstream_ids(steps, worker):
+                    by_id[affected_id]["status"] = "pending"
+                save_plan(root, task_id, plan)
+                orch_ledger(root, task_id, "verify-fix-loop", worker=worker, round=verify_rounds + 1)
+            else:
+                plan["verify_blocked"] = True
+                for step in steps:
+                    if step["role"] in {"qa", "synthesizer"}:
+                        step["status"] = "blocked"
+                blocked = [s["id"] for s in steps if s["status"] in {"blocked", "failed"}]
+                save_plan(root, task_id, plan)
+                orch_ledger(root, task_id, "verify-blocked", command=verify_cmd)
+    finish_allowed = done and not rehearsal and not args.no_finish
     if done:
         synth = next((step for step in reversed(steps) if step["role"] == "synthesizer"), None)
+        body = None
         if synth:
             synth_output = (orchestration_dir(root, task_id) / "steps" / synth["id"] / "final.md").read_text(errors="replace")
             if synth_output.strip().startswith("## Summary") or "## Positive Proof" in synth_output:
                 header = f"# Evidence: {task_id}\n\n"
                 body = synth_output if synth_output.lstrip().startswith("#") and not synth_output.lstrip().startswith("## ") else header + synth_output
                 assert_no_sensitive_text(root, body, "orchestrated evidence")
-                (task_dir(root, task_id) / "evidence.md").write_text(body if body.endswith("\n") else body + "\n")
-        evidence_ok = quiet_call(evidence_doctor, argparse.Namespace(runtime_root=str(root), task_id=task_id, json=True)) == 0
-        if evidence_ok and not args.no_finish:
-            finished = quiet_call(finish_task, argparse.Namespace(runtime_root=str(root), task_id=task_id, force=False, json=True)) == 0
-    orch_ledger(root, task_id, "run-complete", done=done, blocked=blocked, iterations=iterations, evidence_ok=evidence_ok, finished=finished)
+        if rehearsal:
+            preview_dir = orchestration_dir(root, task_id) / "dry-run"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            if body:
+                (preview_dir / "evidence-preview.md").write_text(body if body.endswith("\n") else body + "\n")
+        elif body:
+            (task_dir(root, task_id) / "evidence.md").write_text(body if body.endswith("\n") else body + "\n")
+            evidence_ok = quiet_call(evidence_doctor, argparse.Namespace(runtime_root=str(root), task_id=task_id, json=True)) == 0
+            if evidence_ok and finish_allowed:
+                finished = quiet_call(finish_task, argparse.Namespace(runtime_root=str(root), task_id=task_id, force=False, json=True)) == 0
+    orch_ledger(root, task_id, "run-complete", done=done, blocked=blocked, iterations=iterations, evidence_ok=evidence_ok, finished=finished, dry_run=bool(args.dry_run))
+    ledger_path = str(orchestration_dir(root, task_id) / "ledger.jsonl")
+    if blocked:
+        blocked_paths = [str(orchestration_dir(root, task_id) / "steps" / step_id / "final.md") for step_id in blocked if (orchestration_dir(root, task_id) / "steps" / step_id).exists()]
+        detail = f"review {', '.join(blocked_paths)} and " if blocked_paths else "review "
+        next_action = f"blocked: {detail}the ledger ({ledger_path}), fix the cause, then `harness orchestrate run {task_id} --retry-blocked` to retry the blocked steps"
+    elif rehearsal and done:
+        next_action = f"dry run complete; no task state changed. Preview: {orchestration_dir(root, task_id) / 'dry-run' / 'evidence-preview.md'}"
+    elif finished:
+        next_action = "done"
+    elif done:
+        next_action = "evidence needs attention before finish; check evidence doctor"
+    else:
+        next_action = f"rerun `harness orchestrate run {task_id}` to continue"
     data = {
-        "ok": done and (evidence_ok or args.no_finish),
+        "ok": done and (rehearsal or evidence_ok or args.no_finish),
         "task_id": task_id,
+        "dry_run": bool(args.dry_run),
         "iterations": iterations,
         "steps": [{"id": s["id"], "role": s["role"], "status": s["status"], "attempts": s["attempts"], "verdict": s.get("verdict")} for s in steps],
         "blocked": blocked,
         "evidence_ok": evidence_ok,
         "finished": finished,
-        "next": "done" if finished else ("review blocked steps in the ledger, then rerun orchestrate run" if blocked else ("evidence needs attention before finish" if done else "rerun orchestrate run to continue")),
+        "next": next_action,
     }
     print_json(data) if args.json else print(json.dumps(data, indent=2))
     return 0 if data["ok"] else 1
@@ -2864,8 +3118,14 @@ def memory_query(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     query = args.query.lower()
     results = []
-    for path in [root / "memory" / "claims.jsonl", root / "memory" / "failures.jsonl", root / "memory" / "index.md"]:
-        if path.exists():
+    search = [root / "memory" / "claims.jsonl", root / "memory" / "failures.jsonl", root / "memory" / "index.md"]
+    # Also search the inbox — the only automated write endpoint was previously
+    # invisible to the only automated read endpoint.
+    inbox = root / "memory" / "inbox"
+    if inbox.is_dir():
+        search.extend(sorted(inbox.glob("*.md")))
+    for path in search:
+        if path.exists() and path.is_file():
             for line_no, line in enumerate(path.read_text(errors="replace").splitlines(), start=1):
                 if query in line.lower():
                     results.append({"path": str(path), "line": line_no, "text": line[:500]})
@@ -2873,13 +3133,69 @@ def memory_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_memory_candidate(root: Path, claim: str, source: str, confidence: str) -> Path:
+    assert_no_sensitive_text(root, "\n".join([claim, source, confidence]), "memory candidate")
+    path = root / "memory" / "inbox" / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{slugify(claim)}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# Memory Candidate\n\nClaim: {claim}\n\nSource: {source}\n\nConfidence: {confidence}\n")
+    return path
+
+
 def memory_candidate(args: argparse.Namespace) -> int:
     root = runtime_root(args)
-    text = "\n".join([args.claim, args.source, args.confidence])
-    assert_no_sensitive_text(root, text, "memory candidate")
-    path = root / "memory" / "inbox" / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{slugify(args.claim)}.md"
-    path.write_text(f"# Memory Candidate\n\nClaim: {args.claim}\n\nSource: {args.source}\n\nConfidence: {args.confidence}\n")
+    path = add_memory_candidate(root, args.claim, args.source, args.confidence)
     print_json({"ok": True, "candidate": str(path)})
+    return 0
+
+
+def extract_memory_candidates(text: str) -> list[dict[str, str]]:
+    """Pull real (non-'none') candidates out of an evidence Memory Candidates section."""
+    section = re.search(r"^## Memory Candidates\s*$([\s\S]*?)(?=^## |\Z)", text, re.M)
+    if not section:
+        return []
+    body = section.group(1)
+    candidates = []
+    for block in re.split(r"\n(?=-\s*Candidate:)", body):
+        claim = re.search(r"Candidate:\s*(.+)", block)
+        if not claim:
+            continue
+        value = claim.group(1).strip()
+        if not value or value.lower() in {"none", "n/a", "none identified"}:
+            continue
+        source = re.search(r"Source:\s*(.+)", block)
+        confidence = re.search(r"Confidence:\s*(.+)", block)
+        candidates.append({"claim": value, "source": (source.group(1).strip() if source else "task evidence"), "confidence": (confidence.group(1).strip() if confidence else "medium")})
+    return candidates
+
+
+def memory_promote(args: argparse.Namespace) -> int:
+    """Promote an inbox candidate (or a claim/failure) into the curated ledger."""
+    root = runtime_root(args)
+    target = root / "memory" / ("failures.jsonl" if args.failure else "claims.jsonl")
+    if args.inbox_file:
+        path = Path(args.inbox_file)
+        if not path.is_absolute():
+            path = root / "memory" / "inbox" / args.inbox_file
+        if not path.exists():
+            raise HarnessError(f"Inbox candidate not found: {path}")
+        text = path.read_text(errors="replace")
+        claim = (re.search(r"Claim:\s*(.+)", text) or [None, ""])[1].strip() if re.search(r"Claim:\s*(.+)", text) else text.strip()[:280]
+        source = (re.search(r"Source:\s*(.+)", text).group(1).strip() if re.search(r"Source:\s*(.+)", text) else "inbox")
+        confidence = (re.search(r"Confidence:\s*(.+)", text).group(1).strip() if re.search(r"Confidence:\s*(.+)", text) else "medium")
+    else:
+        if not args.claim:
+            raise HarnessError("memory promote requires an inbox file or --claim")
+        claim, source, confidence = args.claim, args.source or "human", args.confidence or "medium"
+    record = {"claim": claim, "source": source, "confidence": confidence, "promoted_at": utc_now()}
+    append_jsonl(target, record)
+    # Refresh the human-readable index.
+    index = root / "memory" / "index.md"
+    lines = index.read_text(errors="replace").splitlines() if index.exists() else ["# Harness Memory Index", ""]
+    lines.append(f"- {'[failure] ' if args.failure else ''}{claim} (source: {source}, confidence: {confidence})")
+    index.write_text("\n".join(lines) + "\n")
+    if args.inbox_file and args.remove:
+        Path(path).unlink(missing_ok=True)
+    print_json({"ok": True, "promoted_to": str(target), "claim": claim})
     return 0
 
 
@@ -2914,6 +3230,132 @@ def count_jsonl(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(errors="replace").splitlines() if line.strip())
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(errors="replace").splitlines():
+        if line.strip():
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def retro(args: argparse.Namespace) -> int:
+    """Turn the harness's own telemetry into a friction report agents/humans can act on."""
+    root = runtime_root(args)
+    runs = read_jsonl(root / "metrics" / "runs.jsonl")
+    failures = read_jsonl(root / "memory" / "failures.jsonl")
+    denials = read_jsonl(root / "metrics" / "gate-denials.jsonl")
+    finished = [r for r in runs if r.get("status") == "finished"]
+    forced = [r for r in finished if r.get("forced")]
+    denial_counts: dict[str, int] = {}
+    for d in denials:
+        key = str(d.get("reason", ""))[:80]
+        denial_counts[key] = denial_counts.get(key, 0) + 1
+    failure_goals: dict[str, int] = {}
+    for f in failures:
+        key = str(f.get("goal", ""))[:80]
+        failure_goals[key] = failure_goals.get(key, 0) + 1
+    inbox = root / "memory" / "inbox"
+    unpromoted = len(list(inbox.glob("*.md"))) if inbox.is_dir() else 0
+    report = {
+        "generated_at": utc_now(),
+        "tasks_finished": len(finished),
+        "forced_unverified_finishes": len(forced),
+        "orchestration_failures": len(failures),
+        "top_friction": sorted(denial_counts.items(), key=lambda kv: kv[1], reverse=True)[:5],
+        "recurring_failures": sorted([(k, v) for k, v in failure_goals.items() if v > 1], key=lambda kv: kv[1], reverse=True)[:5],
+        "unpromoted_memory_candidates": unpromoted,
+    }
+    out = root / "memory" / "reports" / f"retro-{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+    write_json(out, report)
+    if args.json:
+        print_json({"ok": True, "report": str(out), **report})
+    else:
+        print(f"Retro ({report['tasks_finished']} finished, {report['forced_unverified_finishes']} forced, {report['orchestration_failures']} orch failures)")
+        if forced:
+            print(f"- {len(forced)} task(s) finished UNVERIFIED (forced); review before trusting.")
+        if report["top_friction"]:
+            print("- Top gate friction:")
+            for reason, count in report["top_friction"]:
+                print(f"    {count}x  {reason}")
+        if report["recurring_failures"]:
+            print("- Recurring orchestration failures:")
+            for goal, count in report["recurring_failures"]:
+                print(f"    {count}x  {goal}")
+        if unpromoted:
+            print(f"- {unpromoted} memory candidate(s) awaiting promotion (`harness memory promote ...`).")
+        print(f"Report: {out}")
+    return 0
+
+
+def dir_size_bytes(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def clean(args: argparse.Namespace) -> int:
+    """Prune stale local state with a retention policy so the runtime never grows unbounded."""
+    root = runtime_root(args)
+    if not config_path(root).exists():
+        raise HarnessError("No configured runtime found.")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=args.keep_days)
+    removed: dict[str, list[str]] = {"finished_tasks": [], "adapter_backups": [], "drift_stamps": [], "dry_run_previews": []}
+
+    finished = []
+    for task_json in sorted((root / "tasks").glob("*/task.json")):
+        manifest = load_json(task_json, {})
+        if manifest.get("status") == "finished":
+            try:
+                when = datetime.fromisoformat(str(manifest.get("finished_at", "")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            finished.append((when, task_json.parent))
+    # Keep the most recent --keep-tasks finished tasks and anything newer than cutoff.
+    finished.sort(reverse=True)
+    for index, (when, task_path) in enumerate(finished):
+        if index >= args.keep_tasks and when < cutoff:
+            removed["finished_tasks"].append(task_path.name)
+            if not args.dry_run:
+                shutil.rmtree(task_path, ignore_errors=True)
+
+    backups = root / "state" / "adapters" / "backups"
+    if backups.is_dir():
+        for backup in backups.iterdir():
+            try:
+                if datetime.fromtimestamp(backup.stat().st_mtime, timezone.utc) < cutoff:
+                    removed["adapter_backups"].append(backup.name)
+                    if not args.dry_run:
+                        backup.unlink()
+            except OSError:
+                continue
+    stamps = root / "state" / "drift-stamps"
+    if stamps.is_dir():
+        for stamp in stamps.iterdir():
+            removed["drift_stamps"].append(stamp.name)
+            if not args.dry_run:
+                stamp.unlink(missing_ok=True)
+
+    counts = {key: len(value) for key, value in removed.items()}
+    data = {"ok": True, "dry_run": bool(args.dry_run), "keep_days": args.keep_days, "keep_tasks": args.keep_tasks, "removed": counts, "runtime_bytes": dir_size_bytes(root)}
+    if args.json:
+        print_json(data)
+    else:
+        verb = "Would remove" if args.dry_run else "Removed"
+        print(f"{verb}: " + ", ".join(f"{count} {key}" for key, count in counts.items()))
+        print(f"Runtime size: {data['runtime_bytes'] // 1024} KiB")
+    return 0
 
 
 def eval_run(args: argparse.Namespace) -> int:
@@ -3132,6 +3574,25 @@ def collect_self_check(root: Path, source_root: Path, *, skip_mcp: bool = False)
     config = load_config(root)
     if not config.get("repos"):
         warnings.append("no repo aliases configured")
+    # Surface mess so it does not accumulate silently.
+    try:
+        active = load_json(root / "state" / "active-tasks.json", {})
+        stale = 0
+        for entry in active.values() if isinstance(active, dict) else []:
+            if isinstance(entry, dict):
+                try:
+                    when = datetime.fromisoformat(str(entry.get("updated_at", "")).replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) - when > timedelta(hours=ACTIVE_TASK_TTL_HOURS):
+                        stale += 1
+                except ValueError:
+                    continue
+        if stale:
+            warnings.append(f"{stale} stale active task(s) (>{ACTIVE_TASK_TTL_HOURS}h); finish/abandon them or run `agent-harness clean`")
+        size_mb = dir_size_bytes(root) // (1024 * 1024)
+        if size_mb > 500:
+            warnings.append(f"runtime is {size_mb} MiB; consider `agent-harness clean` to prune old tasks and backups")
+    except Exception:
+        pass
     server = root / "mcp" / "server.mjs"
     if skip_mcp:
         warnings.append("MCP self-test skipped because dependency install was skipped")
@@ -3260,7 +3721,8 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_p.add_argument("--workspace", default=argparse.SUPPRESS)
     uninstall_p.add_argument("--runtime-root", default=argparse.SUPPRESS)
     uninstall_p.add_argument("--dry-run", action="store_true")
-    uninstall_p.add_argument("--restore-adapters", action="store_true")
+    uninstall_p.add_argument("--restore-adapters", action="store_true", help="Deprecated: adapters are restored by default; this flag is a harmless no-op")
+    uninstall_p.add_argument("--keep-adapters", action="store_true", help="Leave managed adapter blocks, hooks, and shims in place (may break tools until removed manually)")
     uninstall_p.add_argument("--json", action="store_true")
     uninstall_p.set_defaults(func=uninstall)
 
@@ -3281,6 +3743,7 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade_p.add_argument("--workspace", default=argparse.SUPPRESS)
     upgrade_p.add_argument("--dry-run", action="store_true")
     upgrade_p.add_argument("--skip-deps", action="store_true")
+    upgrade_p.add_argument("--no-adapters", action="store_true", help="Refresh runtime files only; do not re-sync user-level adapters (skills, subagents, hooks)")
     upgrade_p.add_argument("--json", action="store_true")
     upgrade_p.set_defaults(func=upgrade)
 
@@ -3316,6 +3779,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_p.add_argument("--kind", default="general")
     start_p.add_argument("--risk", default="auto", choices=sorted(RISK_LEVELS))
     start_p.add_argument("--mode", default="run", choices=sorted(MODES))
+    start_p.add_argument("--verify-cmd", help="Canonical verification command (shell) the conductor runs deterministically before finishing")
     start_p.add_argument("--json", action="store_true")
     start_p.set_defaults(func=start_task)
 
@@ -3357,8 +3821,18 @@ def build_parser() -> argparse.ArgumentParser:
     write_p.set_defaults(func=write_evidence)
     doctor_p = evidence_sub.add_parser("doctor")
     doctor_p.add_argument("task_id", nargs="?", default="latest")
+    doctor_p.add_argument("--strict", action="store_true", help="Require a recorded passing check (run-check) to back PASS claims")
     doctor_p.add_argument("--json", action="store_true")
     doctor_p.set_defaults(func=evidence_doctor)
+
+    # Flags precede task_id so REMAINDER captures the whole command cleanly:
+    #   run-check [--json] [--timeout N] <task_id> -- <command...>
+    rc = sub.add_parser("run-check", help="Run a verification command and record a tamper-evident transcript to the task's checks ledger")
+    rc.add_argument("--timeout", type=int, default=600)
+    rc.add_argument("--json", action="store_true")
+    rc.add_argument("task_id", nargs="?", default="latest")
+    rc.add_argument("command", nargs=argparse.REMAINDER, help="After `--`, the command to run")
+    rc.set_defaults(func=run_check)
 
     finish_p = sub.add_parser("finish")
     finish_p.add_argument("task_id", nargs="?", default="latest")
@@ -3450,17 +3924,43 @@ def build_parser() -> argparse.ArgumentParser:
     mem_sub = mem_p.add_subparsers(dest="memory_cmd", required=True)
     mq = mem_sub.add_parser("query")
     mq.add_argument("query")
+    mq.add_argument("--json", action="store_true", help="Output JSON (default; accepted for consistency)")
     mq.set_defaults(func=memory_query)
     mc = mem_sub.add_parser("candidate")
     mc.add_argument("--claim", required=True)
     mc.add_argument("--source", required=True)
     mc.add_argument("--confidence", default="medium")
+    mc.add_argument("--json", action="store_true", help="Output JSON (default; accepted for consistency)")
     mc.set_defaults(func=memory_candidate)
+    mp = mem_sub.add_parser("promote", help="Promote an inbox candidate (or --claim) into curated claims.jsonl / failures.jsonl")
+    mp.add_argument("inbox_file", nargs="?", help="Inbox filename or path; omit to promote a --claim directly")
+    mp.add_argument("--claim")
+    mp.add_argument("--source")
+    mp.add_argument("--confidence")
+    mp.add_argument("--failure", action="store_true", help="Promote into failures.jsonl instead of claims.jsonl")
+    mp.add_argument("--remove", action="store_true", help="Delete the inbox file after promotion")
+    mp.add_argument("--json", action="store_true", help="Output JSON (default; accepted for consistency)")
+    mp.set_defaults(func=memory_promote)
 
     metrics_p = sub.add_parser("metrics")
     metrics_sub = metrics_p.add_subparsers(dest="metrics_cmd", required=True)
     export_p = metrics_sub.add_parser("export")
     export_p.set_defaults(func=metrics_export)
+
+    retro_p = sub.add_parser("retro", help="Friction report from the harness's own telemetry: forced finishes, top gate friction, recurring failures, unpromoted memory")
+    retro_p.add_argument("--runtime-root", default=argparse.SUPPRESS)
+    retro_p.add_argument("--workspace", default=argparse.SUPPRESS)
+    retro_p.add_argument("--json", action="store_true")
+    retro_p.set_defaults(func=retro)
+
+    clean_p = sub.add_parser("clean", help="Prune stale local state (old finished tasks, adapter backups, drift stamps) under a retention policy")
+    clean_p.add_argument("--runtime-root", default=argparse.SUPPRESS)
+    clean_p.add_argument("--workspace", default=argparse.SUPPRESS)
+    clean_p.add_argument("--keep-days", type=int, default=30, help="Keep state newer than this many days (default 30)")
+    clean_p.add_argument("--keep-tasks", type=int, default=50, help="Always keep at least this many recent finished tasks (default 50)")
+    clean_p.add_argument("--dry-run", action="store_true")
+    clean_p.add_argument("--json", action="store_true")
+    clean_p.set_defaults(func=clean)
 
     eval_p = sub.add_parser("eval")
     eval_sub = eval_p.add_subparsers(dest="eval_cmd", required=True)
@@ -3499,6 +3999,7 @@ def build_parser() -> argparse.ArgumentParser:
     orun.add_argument("--max-steps", type=int, default=12)
     orun.add_argument("--step-timeout", type=int, default=600)
     orun.add_argument("--no-finish", action="store_true", help="Stop before finish_task even when evidence passes")
+    orun.add_argument("--retry-blocked", action="store_true", help="Reset blocked/failed steps to pending and retry them (use after fixing the cause)")
     orun.add_argument("--dry-run", action="store_true")
     orun.add_argument("--json", action="store_true")
     orun.set_defaults(func=orchestrate_run)
@@ -3516,6 +4017,13 @@ def main(argv: list[str] | None = None) -> int:
     except HarnessError as exc:
         print(f"agent-harness: {exc}", file=sys.stderr)
         return 2
+    except subprocess.TimeoutExpired as exc:
+        # Never dump the full command/prompt in a traceback; report a bounded message.
+        print(f"agent-harness: command timed out after {exc.timeout}s: {str(exc.cmd)[:120]}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("agent-harness: interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

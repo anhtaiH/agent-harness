@@ -41,6 +41,26 @@ test -x "$RUNTIME/source/agent-harness/bin/agent-harness"
 grep -q "source/agent-harness" "$RUNTIME/bin/harness"
 "$RUNTIME/bin/harness" doctor --json >/dev/null
 "$RUNTIME/bin/harness" verify-gates --json | grep -q '"ok": true'
+
+# Hook-root derivation: a hook invoked with NO AGENT_HARNESS_ROOT env must read
+# state from ITS OWN runtime (parents[1]), not a hardcoded "default" workspace.
+# RUNTIME here is a non-"default" path, so this fails if the hooks regress.
+HOOK_REPO="$TMP_DIR/hookroot-repo"
+mkdir -p "$HOOK_REPO"
+"$RUNTIME/bin/harness" start demo --prompt "hook root probe" --task-id hookroot-probe --json >/dev/null
+python3 -c "
+import json, pathlib
+p = pathlib.Path('$RUNTIME/state/active-tasks.json')
+d = json.loads(p.read_text()) if p.exists() else {}
+d['$HOOK_REPO'] = {'task_id': 'hookroot-probe', 'mode': 'run', 'updated_at': '2099-01-01T00:00:00Z'}
+p.write_text(json.dumps(d))
+"
+# No AGENT_HARNESS_ROOT in env; the hook must still find hookroot-probe (no evidence) and block.
+hook_out="$(env -u AGENT_HARNESS_ROOT python3 "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON
+{"cwd": "$HOOK_REPO"}
+JSON
+)" || true
+echo "$hook_out" | grep -q "hookroot-probe" || { echo "stop hook did not derive its runtime root from __file__" >&2; exit 1; }
 "$TMP_DIR/bin/agent-harness" doctor --json >/dev/null
 "$TMP_DIR/bin/agent-harness" where --runtime-root "$RUNTIME" --json >/dev/null
 "$TMP_DIR/bin/ah" examples >/dev/null
@@ -66,19 +86,74 @@ node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
 # Orchestration conductor: dynamic plan, gated dry-run to autonomous finish
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated demo task" --task-id orch-task --risk red --mode run --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate plan orch-task --dry-run --json | grep -q '"security-review"'
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-task --dry-run --json | grep -q '"finished": true'
+# With the finish knob, the deterministic path runs all the way to finish
+AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-task --dry-run --json | grep -q '"finished": true'
 test -f "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
 grep -q "run-complete" "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate status orch-task | grep -q '"plan"'
+# A plain dry run is a rehearsal: it must NOT finish or write the real evidence.md
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Rehearsal task" --task-id orch-rehearse --risk green --mode run --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-rehearse --dry-run --json | grep -q '"finished": false'
+if [ -f "$RUNTIME/tasks/orch-rehearse/evidence.md" ]; then
+  echo "dry-run rehearsal must not write the real evidence.md" >&2
+  exit 1
+fi
+test -f "$RUNTIME/tasks/orch-rehearse/orchestration/dry-run/evidence-preview.md"
+python3 -c "import json,sys; m=json.load(open('$RUNTIME/tasks/orch-rehearse/task.json')); sys.exit(0 if m['status'] != 'finished' else 1)"
 # Fix loop recovers from a transient QA failure
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated fix-loop task" --task-id orch-fix --risk green --mode run --json >/dev/null
-AGENT_HARNESS_ORCH_FAIL_STEPS=verify AGENT_HARNESS_ORCH_FAIL_ATTEMPTS=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-fix --dry-run --json | grep -q '"finished": true'
+AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 AGENT_HARNESS_ORCH_FAIL_STEPS=verify AGENT_HARNESS_ORCH_FAIL_ATTEMPTS=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-fix --dry-run --json | grep -q '"finished": true'
 # Persistent reviewer rejection ends blocked, never finishes
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated blocked task" --task-id orch-block --risk green --mode run --json >/dev/null
-if AGENT_HARNESS_ORCH_FAIL_STEPS=review "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-block --dry-run --max-attempts 2 --json | grep -q '"finished": true'; then
+if AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 AGENT_HARNESS_ORCH_FAIL_STEPS=review "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-block --dry-run --max-attempts 2 --json | grep -q '"finished": true'; then
   echo "blocked orchestration run must not finish the task" >&2
   exit 1
 fi
+
+# Anti-hallucination: evidence must not fabricate PASS; strict tasks need a real check
+# (doctor exits 2 on failure; capture-then-grep so pipefail does not trip set -e)
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "strict task" --task-id ah-strict --risk yellow --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-strict --summary "did work" --json >/dev/null
+grep -q "NOT VERIFIED" "$RUNTIME/tasks/ah-strict/evidence.md"  # omitted results are honest, not fabricated PASS
+strict_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-strict --json || true)"
+echo "$strict_out" | grep -q '"ok": false'  # strict blocks: no recorded check
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-strict -- python3 -c "print('real'); exit(0)" | grep -q '"ok": true'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-strict --summary "did work" --positive-result PASS --commands-run "python3 -c ..." --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-strict --json | grep -q '"ok": true'  # now backed by a passing check
+# A FAILING check must not satisfy strict PASS
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "liar task" --task-id ah-liar --risk red --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-liar -- python3 -c "exit(1)" >/dev/null 2>&1 || true
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-liar --summary lies --positive-result PASS --commands-run x --json >/dev/null
+liar_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-liar --json || true)"
+echo "$liar_out" | grep -q '"ok": false'
+# Memory loop: candidate -> inbox -> queryable -> promote -> claims.jsonl
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" memory candidate --claim "widget cache needs invalidation" --source "src/w.py:5" >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" memory query widget | grep -q '"results"'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" memory query widget | grep -q "widget cache"  # inbox is searchable
+promote_file="$(ls "$RUNTIME/memory/inbox" | head -1)"
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" memory promote "$promote_file" --json | grep -q '"ok": true'
+grep -q "widget cache" "$RUNTIME/memory/claims.jsonl"
+# Conductor deterministic verify command: PASS gates finish, FAIL never finishes and ends blocked
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "verify pass" --task-id ah-vpass --risk yellow --verify-cmd "true" --json >/dev/null
+AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run ah-vpass --dry-run --json | grep -q '"finished": true'
+grep -q '"command": "true"' "$RUNTIME/tasks/ah-vpass/checks.jsonl"  # the real command was executed and recorded
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "verify fail" --task-id ah-vfail --risk green --verify-cmd "false" --json >/dev/null
+for _ in 1 2 3; do
+  # a blocked/unfinished run exits non-zero by design; capture with || true
+  vfail_out="$(AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run ah-vfail --dry-run --max-attempts 1 --json || true)"
+  echo "$vfail_out" | grep -q '"finished": true' && { echo "failing verify-cmd must never finish the task" >&2; exit 1; }
+done
+echo "$vfail_out" | grep -q "retry-blocked"
+# --retry-blocked resets and is recorded
+AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run ah-vfail --dry-run --retry-blocked --max-attempts 1 --json >/dev/null 2>&1 || true
+grep -q "retry-blocked" "$RUNTIME/tasks/ah-vfail/orchestration/ledger.jsonl"
+# Atomic writes leave no temp files behind
+if ls "$RUNTIME"/tasks/*/.task.json.tmp-* >/dev/null 2>&1; then echo "atomic write left temp files" >&2; exit 1; fi
+# retro reports telemetry; clean prunes under retention with a safe dry-run
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" retro --json | grep -q '"tasks_finished"'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" clean --dry-run --json | grep -q '"dry_run": true'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" clean --dry-run --keep-days 0 --keep-tasks 0 --json | grep -q '"removed"'
+test -d "$RUNTIME/tasks/ah-strict"  # dry-run must not delete
 
 SKIP_RUNTIME="$TMP_DIR/runtime-skip-deps"
 npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --json >/dev/null

@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT", Path.home() / ".agent-harness" / "default")).expanduser()
+ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
 PATTERNS = ROOT / "policy" / "redaction-patterns.json"
 DEFAULTS = [
     r"gh[pousr]_[0-9A-Za-z_]{24,}",

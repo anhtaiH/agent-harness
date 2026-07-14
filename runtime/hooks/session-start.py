@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT", Path.home() / ".agent-harness" / "default")).expanduser()
+ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
 
 
 def payload_cwd() -> str:

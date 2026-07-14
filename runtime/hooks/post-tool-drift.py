@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT", Path.home() / ".agent-harness" / "default")).expanduser()
+ROOT = Path(os.environ.get("AGENT_HARNESS_ROOT") or Path(__file__).resolve().parents[1]).expanduser()
 THROTTLE_MINUTES = 10
 
 
@@ -55,15 +55,22 @@ def main() -> int:
     repo = next((path for path in configured_repos() if cwd == path or path in cwd.parents), None)
     if repo is None:
         return 0
-    result = subprocess.run(
-        ["git", "-C", str(repo), "status", "--short", "--untracked-files=no"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    # Throttle first (stamp before probing) so a hung git never re-fires every event.
+    if throttled(repo):
+        return 0
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--short", "--untracked-files=no"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
     changed = len(result.stdout.strip().splitlines())
-    if changed and not throttled(repo):
+    if changed:
         print(
             json.dumps(
                 {

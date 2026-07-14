@@ -23,7 +23,8 @@ For multi-step work the human wants done end-to-end (not steered), prefer the co
 - Use a harness-managed worktree for implementation unless the packet explicitly says otherwise.
 - Record progress checkpoints at meaningful boundaries (`record_progress`).
 - Run independent review lanes for risky implementation: `harness-reviewer`, `harness-verifier`, and `harness-security` subagents where supported, or cross-tool peer lanes via `agent_run`.
-- Finish only after `evidence.md` passes the evidence doctor (`evidence_doctor` then `finish_task`).
+- Back verification claims with `run_check` (`harness run-check <task> -- <cmd>`), which records the real exit code; strict tasks (yellow/red) require a recorded passing check before finishing.
+- Finish only after `evidence.md` passes the evidence doctor (`evidence_doctor` then `finish_task`). Omitted results are recorded as NOT VERIFIED, never fabricated as PASS.
 
 ## Gates (enforced, not advisory)
 
