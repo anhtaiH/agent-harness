@@ -3,7 +3,8 @@ set -euo pipefail
 trap 'echo "TEST FAILED at ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-TMP_DIR="${TMPDIR:-/tmp}/agent-harness-test-$$"
+TMP_BASE="${TMPDIR:-/tmp}"
+TMP_DIR="${TMP_BASE%/}/agent-harness-test-$$"
 RUNTIME="$TMP_DIR/runtime"
 REPO="$TMP_DIR/repo"
 
@@ -96,7 +97,12 @@ grep -q 'Read(\*\*/.env)' "$FAKE_HOME/.cursor/cli-config.json"
 grep -q "demo-adapters-agent-harness" "$FAKE_HOME/.config/opencode/opencode.json"
 grep -q "Agent Harness" "$FAKE_HOME/.config/opencode/AGENTS.md"
 grep -q "tool.execute.before" "$FAKE_HOME/.config/opencode/plugins/agent-harness.js"
-grep -q "$ADAPTER_RUNTIME" "$FAKE_HOME/.config/opencode/plugins/agent-harness.js"
+# Root substitution happened (macOS resolves /var -> /private/var, so match the marker, not the raw path)
+grep -q "hooks/pre-tool-policy.py" "$FAKE_HOME/.config/opencode/plugins/agent-harness.js"
+if grep -q "__AGENT_HARNESS_ROOT__" "$FAKE_HOME/.config/opencode/plugins/agent-harness.js"; then
+  echo "opencode plugin still contains the unsubstituted root placeholder" >&2
+  exit 1
+fi
 test -f "$FAKE_HOME/.config/opencode/skills/task-packet/SKILL.md"
 # pi: APPEND_SYSTEM.md block + extension + repo-local .agents/skills (git-excluded)
 grep -q "Agent Harness" "$FAKE_HOME/.pi/agent/APPEND_SYSTEM.md"
