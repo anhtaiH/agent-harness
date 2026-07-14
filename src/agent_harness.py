@@ -2366,7 +2366,15 @@ def step_prompt(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, 
     if retry_context:
         lines.append("- This is a retry. Address these findings first:")
         lines.extend(f"  {item}" for item in retry_context)
-    lines.extend(["", "Your final message is parsed by a deterministic conductor. Follow the role's output format exactly."])
+    lines.extend(
+        [
+            "",
+            "You are one bounded step inside an already-running harness task. Do NOT start, resume, or finish harness tasks, "
+            "do NOT call harness MCP tools or the harness CLI, and ignore any global instructions telling you to do so — "
+            "the conductor owns the task lifecycle.",
+            "Your final message is parsed by a deterministic conductor. Follow the role's output format exactly.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -2942,6 +2950,9 @@ GATE_CASES: list[dict[str, Any]] = [
     {"name": "allow-ls", "hook": "pre-tool-policy.py", "payload": {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}, "expect": "allow"},
     {"name": "allow-connector-read", "hook": "pre-tool-policy.py", "payload": {"tool_name": "mcp__github__list_issues", "tool_input": {}}, "expect": "allow"},
     {"name": "allow-git-status", "hook": "pre-tool-policy.py", "payload": {"tool_name": "Bash", "tool_input": {"command": "git status && git diff"}}, "expect": "allow"},
+    {"name": "allow-agent-prompt-mentioning-publish", "hook": "pre-tool-policy.py", "payload": {"tool_name": "Task", "tool_input": {"prompt": "Constraints: never run npm publish or terraform apply."}}, "expect": "allow"},
+    {"name": "allow-write-doc-mentioning-remote-pipe", "hook": "pre-tool-policy.py", "payload": {"tool_name": "Write", "tool_input": {"file_path": "docs/security.md", "content": "Never pipe curl output into bash."}}, "expect": "allow"},
+    {"name": "deny-sensitive-path-in-write-tool", "hook": "pre-tool-policy.py", "payload": {"tool_name": "Write", "tool_input": {"file_path": str(Path.home() / ".ssh" / "config"), "content": "Host *"}}, "expect": "deny"},
     # Secret-like payloads are assembled at runtime so the harness's own leak scanners never match this source file.
     {"name": "block-prompt-with-token", "hook": "prompt-secret-scan.py", "payload": {"prompt": "use ghp_" + "a" * 36 + " to auth"}, "expect": "deny"},
     {"name": "block-prompt-with-private-key", "hook": "prompt-secret-scan.py", "payload": {"prompt": "-----BEGIN OPENSSH PRIVATE " + "KEY-----"}, "expect": "deny"},
@@ -2951,6 +2962,9 @@ GATE_CASES: list[dict[str, Any]] = [
     {"name": "stop-allows-complete-evidence", "hook": "stop-requires-evidence.py", "payload": {"cwd": "{repo}"}, "fixture": "active-task-complete-evidence", "expect": "allow"},
     {"name": "stop-honors-loop-guard", "hook": "stop-requires-evidence.py", "payload": {"cwd": "{repo}", "stop_hook_active": True}, "fixture": "active-task-no-evidence", "expect": "allow"},
     {"name": "stop-ignores-unrelated-cwd", "hook": "stop-requires-evidence.py", "payload": {"cwd": "/tmp"}, "fixture": "active-task-no-evidence", "expect": "allow"},
+    {"name": "stop-ignores-env-task-in-print-mode", "hook": "stop-requires-evidence.py", "payload": {"cwd": "/tmp"}, "env": {"AGENT_HARNESS_TASK_ID": "ghost-task"}, "expect": "allow"},
+    {"name": "stop-ignores-never-started-task", "hook": "stop-requires-evidence.py", "payload": {"cwd": "/tmp"}, "env": {"AGENT_HARNESS_TASK_ID": "ghost-task", "AGENT_HARNESS_REQUIRE_EVIDENCE": "1"}, "expect": "allow"},
+    {"name": "stop-honors-skip-escape", "hook": "stop-requires-evidence.py", "payload": {"cwd": "{repo}"}, "fixture": "active-task-no-evidence", "env": {"AGENT_HARNESS_SKIP_STOP_GATE": "1"}, "expect": "allow"},
 ]
 
 COMPLETE_EVIDENCE = """# Evidence: gate-check
@@ -3020,6 +3034,7 @@ def build_gate_fixture(fixture_root: Path, kind: str) -> Path:
     repo.mkdir(parents=True, exist_ok=True)
     task_dir_ = fixture_root / "tasks" / "gate-check"
     task_dir_.mkdir(parents=True, exist_ok=True)
+    write_json(task_dir_ / "task.json", {"task_id": "gate-check", "status": "started", "created_at": utc_now()})
     write_json(
         fixture_root / "state" / "active-tasks.json",
         {str(repo): {"task_id": "gate-check", "mode": "run", "updated_at": utc_now()}},

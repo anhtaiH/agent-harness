@@ -94,14 +94,21 @@ def main() -> int:
     if payload.get("stop_hook_active"):
         return 0
 
-    task_id = os.environ.get("AGENT_HARNESS_TASK_ID")
-    if not task_id and os.environ.get("AGENT_HARNESS_REQUIRE_EVIDENCE") == "1":
-        print("AGENT_HARNESS_REQUIRE_EVIDENCE=1 but AGENT_HARNESS_TASK_ID is unset.", file=sys.stderr)
-        return 2
+    # The env task id binds only when the wrapper explicitly demanded evidence
+    # (interactive wrapper sessions). Print-mode / peer-lane runs export the
+    # task id for artifact routing but must not be stop-gated.
+    task_id = None
+    if os.environ.get("AGENT_HARNESS_REQUIRE_EVIDENCE") == "1":
+        task_id = os.environ.get("AGENT_HARNESS_TASK_ID")
+        if not task_id:
+            print("AGENT_HARNESS_REQUIRE_EVIDENCE=1 but AGENT_HARNESS_TASK_ID is unset.", file=sys.stderr)
+            return 2
     if not task_id:
         task_id = active_task_for_cwd(str(payload.get("cwd") or os.getcwd()))
     if not task_id:
         return 0
+    if not (ROOT / "tasks" / task_id / "task.json").exists():
+        return 0  # never gate on a task that was never started
 
     evidence = ROOT / "tasks" / task_id / "evidence.md"
     if not evidence.exists():

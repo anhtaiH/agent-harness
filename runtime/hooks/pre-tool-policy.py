@@ -71,6 +71,11 @@ DESTRUCTIVE_RE = re.compile(
 CONNECTOR_WRITE_RE = re.compile(r"(update|create|delete|comment|send|schedule|transition|post|publish|merge|close)", re.I)
 READ_ONLY_CONNECTOR_RE = re.compile(r"(fetch|get|list|read|search|query|view|find|lookup|download)", re.I)
 CONNECTOR_PROVIDERS = ["github", "slack", "jira", "confluence", "atlassian"]
+# Command-execution patterns only apply to tools that execute shell commands.
+# Content-carrying tools (Write bodies, Agent prompts, MCP payloads) may
+# legitimately MENTION dangerous commands; those commands are gated at
+# execution time when a shell tool actually runs them.
+EXEC_TOOL_RE = re.compile(r"(bash|shell|terminal|cmd|exec)", re.I)
 
 
 def load_payload() -> dict[str, Any]:
@@ -175,21 +180,22 @@ def decide(payload: dict[str, Any]) -> tuple[str, str]:
     name = tool_name(payload)
     mode = session_mode(payload)
     normalized = text.replace("~/", HOME + "/").replace("$HOME/", HOME + "/")
+    is_exec_tool = bool(EXEC_TOOL_RE.search(name)) or not name
 
     if SENSITIVE_PATH_RE.search(normalized):
         return "deny", "Agent harness: blocked access to a credential or secret file path. Use scoped config or ask the human."
-    if REMOTE_EXEC_RE.search(normalized):
+    if is_exec_tool and REMOTE_EXEC_RE.search(normalized):
         return "deny", "Agent harness: blocked piping remote content into an interpreter. Download, inspect, then run explicitly."
-    if LEAK_TOOL_RE.search(normalized):
+    if is_exec_tool and LEAK_TOOL_RE.search(normalized):
         return "deny", "Agent harness: blocked a possible secret-exfiltration pattern."
-    if PROD_RE.search(normalized):
+    if is_exec_tool and PROD_RE.search(normalized):
         return "deny", "Agent harness: production-affecting command requires explicit human-owned scope (see task packet stop conditions)."
-    if FORCE_PUSH_RE.search(normalized):
+    if is_exec_tool and FORCE_PUSH_RE.search(normalized):
         if PROTECTED_BRANCH_RE.search(normalized):
             return "deny", "Agent harness: force-push to a protected branch is blocked."
         if mode != "yolo":
             return "ask", "Agent harness: force-push to a feature branch. Confirm before proceeding."
-    if DESTRUCTIVE_RE.search(normalized):
+    if is_exec_tool and DESTRUCTIVE_RE.search(normalized):
         if mode != "yolo":
             return "ask", "Agent harness: destructive local command outside yolo mode. Confirm before proceeding."
 

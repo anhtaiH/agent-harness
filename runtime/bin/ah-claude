@@ -81,7 +81,9 @@ fi
 if [ -n "$task_id" ]; then
   export AGENT_HARNESS_TASK_ID="$task_id"
   if [ "$print_mode" -eq 1 ]; then
+    # Peer-lane/print runs are ephemeral: never stop-gate them.
     unset AGENT_HARNESS_REQUIRE_EVIDENCE || true
+    export AGENT_HARNESS_SKIP_STOP_GATE=1
   else
     export AGENT_HARNESS_REQUIRE_EVIDENCE=1
   fi
