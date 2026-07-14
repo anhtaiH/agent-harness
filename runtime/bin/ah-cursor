@@ -72,6 +72,7 @@ case "$harness_mode" in
   yolo) args=(--yolo --sandbox disabled "${args[@]}") ;;
   *) echo "Unknown --harness-mode: $harness_mode" >&2; exit 2 ;;
 esac
+export AGENT_HARNESS_MODE="$harness_mode"
 
 cursor_bin="$(command -v cursor-agent 2>/dev/null || true)"
 if [ -z "$cursor_bin" ]; then

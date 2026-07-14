@@ -2,6 +2,7 @@
 set -euo pipefail
 
 task_id=""
+harness_mode="run"
 print_mode=0
 native_worktree_requested=0
 allow_native_worktree="${AGENT_HARNESS_ALLOW_NATIVE_WORKTREE:-0}"
@@ -19,6 +20,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --task=*)
       task_id="${1#--task=}"
+      shift
+      ;;
+    --harness-mode)
+      [ "$#" -ge 2 ] || { echo "--harness-mode requires a value" >&2; exit 2; }
+      harness_mode="${2:-}"
+      shift 2
+      ;;
+    --harness-mode=*)
+      harness_mode="${1#--harness-mode=}"
       shift
       ;;
     -p|--print)
@@ -76,5 +86,9 @@ if [ -n "$task_id" ]; then
     export AGENT_HARNESS_REQUIRE_EVIDENCE=1
   fi
 fi
+case "$harness_mode" in
+  plan|run|yolo) export AGENT_HARNESS_MODE="$harness_mode" ;;
+  *) echo "Unknown --harness-mode: $harness_mode" >&2; exit 2 ;;
+esac
 
 exec claude "${args[@]}"

@@ -5,9 +5,10 @@ import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = process.env.AGENT_HARNESS_ROOT || path.join(os.homedir(), ".agent-harness", process.env.AGENT_HARNESS_WORKSPACE || "default");
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = process.env.AGENT_HARNESS_ROOT || path.resolve(SCRIPT_DIR, "..");
 
 function configuredSourceRoot() {
   try {
@@ -18,6 +19,21 @@ function configuredSourceRoot() {
   }
 }
 
+function packageVersion() {
+  const sourceRoot = configuredSourceRoot();
+  for (const candidate of [sourceRoot ? path.join(sourceRoot, "package.json") : null].filter(Boolean)) {
+    try {
+      const data = JSON.parse(readFileSync(candidate, "utf8"));
+      if (typeof data.version === "string") return data.version;
+    } catch {
+      // fall through to the static fallback
+    }
+  }
+  return "0.0.0";
+}
+
+const VERSION = packageVersion();
+
 async function importPackage(packageName, relativePaths) {
   try {
     return await import(packageName);
@@ -27,6 +43,10 @@ async function importPackage(packageName, relativePaths) {
     const candidates = paths.flatMap((relativePath) =>
       [
         sourceRoot ? path.join(sourceRoot, "node_modules", ...relativePath) : null,
+        // Installed layout: <runtime>/mcp/server.mjs next to <runtime>/source/agent-harness/node_modules
+        path.join(SCRIPT_DIR, "..", "source", "agent-harness", "node_modules", ...relativePath),
+        // Source-repo layout: <repo>/runtime/mcp/server.mjs next to <repo>/node_modules
+        path.join(SCRIPT_DIR, "..", "..", "node_modules", ...relativePath),
         path.join(os.homedir(), "node_modules", ...relativePath),
       ].filter(Boolean)
     );
@@ -77,6 +97,7 @@ const toolNames = [
   "memory_candidate",
   "profile_generate",
   "self_check",
+  "verify_gates",
 ];
 const resourceUris = ["agent-harness://tasks/latest", "agent-harness://dashboard", "agent-harness://memory/index"];
 const promptNames = ["start-from-description", "resume-latest", "finish-with-evidence", "review-pr"];
@@ -169,7 +190,7 @@ async function readIfExists(filePath, fallback) {
 
 const server = new FastMCP({
   name: "agent-harness",
-  version: "0.1.0",
+  version: VERSION,
   instructions: "Local agent harness control plane. Use task packets, generated profiles, evidence, review lanes, and write intents. Do not use this server as a generic shell.",
   roots: { enabled: false },
 });
@@ -266,6 +287,12 @@ server.addTool({ name: "memory_query", description: "Query curated local memory.
 server.addTool({ name: "memory_candidate", description: "Append a source-backed local memory candidate.", parameters: z.object({ claim: z.string(), source: z.string(), confidence: z.string().optional() }), execute: async (args) => runHarness(["memory", "candidate", "--claim", args.claim, "--source", args.source, "--confidence", args.confidence || "medium"], { json: true }) });
 server.addTool({ name: "profile_generate", description: "Generate or refresh the local workspace profile from a repo checkout.", parameters: z.object({ repo: z.string(), repo_alias: z.string().optional() }), execute: async (args) => runHarness(["profile", "generate", "--repo", args.repo, ...(args.repo_alias ? ["--repo-alias", args.repo_alias] : []), "--json"], { json: true }) });
 server.addTool({ name: "self_check", description: "Run harness self-check.", parameters: z.object({}), execute: async () => runHarness(["self-check", "--json"], { json: true, timeoutMs: 300000 }) });
+server.addTool({
+  name: "verify_gates",
+  description: "Prove the guardrail hooks fire: run canned allow/ask/deny payloads through every policy hook and return the case-by-case results.",
+  parameters: z.object({ record: z.boolean().optional() }),
+  execute: async (args) => runHarness(["verify-gates", ...(args.record ? ["--record"] : []), "--json"], { json: true, timeoutMs: 120000 }),
+});
 
 server.addResource({ uri: "agent-harness://tasks/latest", name: "Latest Agent Harness Task", mimeType: "text/markdown", load: async () => ({ text: await readIfExists(path.join(STATUS_DIR, "latest.md"), "No latest task status has been generated yet.\n") }) });
 server.addResource({ uri: "agent-harness://dashboard", name: "Agent Harness Dashboard", mimeType: "text/html", load: async () => ({ text: await readIfExists(path.join(STATUS_DIR, "index.html"), "Run the status tool to generate the dashboard.\n") }) });
@@ -278,7 +305,7 @@ server.addPrompt({ name: "review-pr", description: "Review a PR through the draf
 
 if (process.argv.includes("--self-test")) {
   const envProbe = scrubbedEnv();
-  console.log(JSON.stringify({ name: "agent-harness", version: "0.1.0", tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
+  console.log(JSON.stringify({ name: "agent-harness", version: VERSION, tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
 } else {
   server.start({ transportType: "stdio" });
 }

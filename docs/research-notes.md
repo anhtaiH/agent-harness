@@ -1,44 +1,70 @@
 # Research Notes
 
-Agent Harness is informed by several public patterns and local lessons.
+Agent Harness tracks public harness-engineering practice. Last refreshed: July 2026.
 
-## Harness Engineering
+## Instruction files: AGENTS.md convergence
 
-OpenAI’s harness engineering framing treats the agent as a worker inside a purpose-built loop: task setup, tool access, verification, feedback, and iteration. This project applies that locally with task packets, worktrees, MCP tools, review lanes, and evidence gates.
+AGENTS.md is the cross-tool instruction standard (stewarded by the Agentic AI Foundation under the Linux Foundation; adopted by Codex, Cursor, Gemini CLI, opencode, Zed, Copilot, and ~20 more). Claude Code still reads CLAUDE.md rather than AGENTS.md, so the harness renders one shared instruction body into each tool's native location (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.config/opencode/AGENTS.md`, `~/.pi/agent/APPEND_SYSTEM.md`, `.cursor/rules/*.mdc`) as marker-delimited managed blocks.
 
-Sources:
+Evidence on content: short root files win. HumanLayer recommends <300 lines with progressive disclosure; Augment's evals found 100-150-line instruction files plus on-demand reference docs outperform long files, and architecture over-description reduces completeness. The harness keeps its managed block ~10 lines and points to the long-form runtime instructions.
 
-- [OpenAI: Harness Engineering](https://openai.com/index/harness-engineering/)
-- [OpenAI: Unlocking the Codex Harness](https://openai.com/index/unlocking-the-codex-harness/)
+- https://agents.md/
+- https://www.humanlayer.dev/blog/writing-a-good-claude-md
+- https://www.augmentcode.com/blog/how-to-write-good-agents-dot-md-files
 
-## Surface-Agnostic Agents
+## Gates as hooks, not prose
 
-The same runtime should work from desktop apps, TUIs, CLIs, and headless agent calls. The package exposes a local MCP server, CLI shims, and natural-language router instructions so Codex, Claude, Cursor, or future tools can share one control plane.
+The deployed pattern for guardrails is native hook wiring, not instruction text: Claude Code hooks (`PreToolUse` with `permissionDecision: allow|ask|deny`, `UserPromptSubmit`, `Stop` with `stop_hook_active` loop guards, `SessionStart` context injection), Cursor `hooks.json` (`beforeShellExecution`/`beforeMCPExecution` returning `{"permission": ...}`), opencode plugins (`tool.execute.before`), and pi extensions (blockable `tool_call`). Reference deployments: Anthropic's bash-command validator example, tdd-guard, sensitive-canary (UserPromptSubmit secret blocking), git-guard. The harness ships one Python policy engine and bridges it into each surface, then proves behavior with `verify-gates`.
 
-## Small Measurable Loops
+- https://code.claude.com/docs/en/hooks
+- https://cursor.com/docs/agent/hooks
+- https://opencode.ai/docs/plugins/
+- https://github.com/nizos/tdd-guard
 
-Karpathy’s `autoresearch` style emphasizes bounded runs, explicit outputs, and repeatable scoring. Agent Harness mirrors this with golden evals, evidence documents, metrics JSONL, and local reports.
+## Sandboxing and deny-by-default
 
-Source:
+Anthropic ships OS-level sandboxing (Seatbelt/bubblewrap, open-source `sandbox-runtime`) and documents bypass-permissions as container-only; Codex runs Landlock/seccomp with `sandbox_mode` + `approval_policy`; both vendors added auto-classifiers that block destructive commands. The harness complements (not replaces) these with permission deny seeds (`Read(**/.env)`, `Read(~/.ssh/**)`) and env scrubbing in wrappers and the MCP server.
 
-- [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+- https://code.claude.com/docs/en/sandbox-environments
+- https://github.com/anthropic-experimental/sandbox-runtime
+- https://developers.openai.com/codex/config-reference
 
-## Markdown Knowledge Bases
+## Prompt injection and MCP security
 
-Markdown knowledge works when claims are source-backed, easy to diff, and promoted deliberately. The harness keeps mutable local memory as candidates, then expects humans to promote stable lessons into project-owned docs.
+Operating assumptions: Simon Willison's lethal trifecta (private data + untrusted content + external communication must never combine), Invariant Labs' tool-poisoning/rug-pull findings, and MCPTox. Consequences in this harness: connector writes require task-scoped intents, PR review is draft-only, tool output is treated as untrusted, secrets are blocked at the prompt boundary, and MCP servers should be allowlisted in tool config.
 
-Reference pattern:
+- https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/
+- https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
+- https://arxiv.org/pdf/2508.14925
 
-- [karpathy/llm.c wiki](https://github.com/karpathy/llm.c/wiki)
+## MCP vs CLI
 
-## MCP Security
+Anthropic's "Code execution with MCP" (98.7% context reduction by moving from schema-loading to code APIs) and Ronacher's CLI-first essays set the 2026 rule of thumb: prefer CLIs the agent can compose; use MCP for auth-gated SaaS and control planes; defer schemas. The harness follows it: one small MCP control plane (task/evidence/review state machine), a full CLI equivalent for CLI-first tools like pi, and no generic-shell MCP tools.
 
-MCP expands agent capability, so the harness treats tools as scoped surfaces. It avoids raw token passthrough, keeps write intents task-scoped, and leaves hard stops for secrets and production-affecting actions.
+- https://www.anthropic.com/engineering/code-execution-with-mcp
+- https://lucumr.pocoo.org/2025/7/3/tools/
 
-Source:
+## Context engineering and state
 
-- [MCP Security Best Practices](https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices)
+Anthropic's context-engineering guidance (attention budget, compaction, structured note-taking, subagent isolation) and Chroma's context-rot research motivate the harness's file-based state: task packets, progress checkpoints, evidence documents, and the session-start capsule survive compaction and session restarts; heavy review work runs in isolated lanes.
 
-## Local Product Principle
+- https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+- https://research.trychroma.com/context-rot
 
-The product interface is not the backend command. Humans should be able to install once, then ask natural-language tasks. Backend commands exist for diagnosis, automation, and fallback.
+## Orchestration patterns
+
+Patterns the harness aligns with: orchestrator-worker fan-out with independent verifier/critic lanes (Anthropic multi-agent research), plan-then-execute/spec-driven development (github/spec-kit, Agent OS), git worktrees for parallel isolation (now native in major tools), ralph-style bounded loops with file/git state and test backpressure, and graph task queues (Yegge's beads). The harness's task packets, review lanes, and worktree policy are local implementations of these.
+
+- https://www.anthropic.com/engineering/built-multi-agent-research-system
+- https://github.com/github/spec-kit
+- https://ghuntley.com/ralph/
+- https://github.com/gastownhall/beads
+
+## Ecosystem: personal/meta harnesses
+
+Comparable projects: obra/superpowers (skills + methodology, multi-harness plugin), affaan-m/ECC, wshobson/agents, SuperClaude, ruvnet/ruflo, buildermethods/agent-os, steipete/agent-scripts (canonical rules + per-tool symlink mirrors), the dotagents family (`.agents/` as source of truth), and danielmiessler's LifeOS ("paste this URL into your agent" install). Shared traits the harness adopts: agent-prompt install with deterministic scripts underneath, idempotent managed edits with backups and full uninstall, skills as the packaging unit (Agent Skills standard), doctor/self-check commands, and cross-tool adapters from one canonical source.
+
+- https://github.com/obra/superpowers
+- https://github.com/humanlayer/12-factor-agents
+- https://github.com/getsentry/dotagents
+- https://agentskills.io

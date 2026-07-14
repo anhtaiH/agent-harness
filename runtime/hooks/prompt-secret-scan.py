@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Reject prompts that appear to include sensitive raw material."""
+"""UserPromptSubmit gate: reject prompts that contain raw secret material.
+
+Blocking here keeps credentials out of the session transcript, out of model
+context, and out of any downstream tool call. Patterns come from
+policy/redaction-patterns.json with conservative built-in defaults.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ PATTERNS = ROOT / "policy" / "redaction-patterns.json"
 DEFAULTS = [
     r"gh[pousr]_[0-9A-Za-z_]{24,}",
     r"sk-[0-9A-Za-z]{24,}",
+    r"sk-ant-[0-9A-Za-z_\-]{20,}",
     r"AKIA[0-9A-Z]{16}",
     r"xox[baprs]-[0-9A-Za-z-]{24,}",
     r"-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----",
@@ -53,14 +59,17 @@ def main() -> int:
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw or "{}")
-        text = "\n".join(iter_strings(payload))
+        text = str(payload.get("prompt")) if isinstance(payload, dict) and payload.get("prompt") else "\n".join(iter_strings(payload))
     except Exception:
         text = raw
     if any(pattern.search(text) for pattern in load_patterns()):
-        reason = "Blocked by agent harness: prompt appears to contain sensitive raw material."
+        reason = (
+            "Agent harness blocked this prompt: it appears to contain a raw credential or secret. "
+            "Remove the secret (reference it by name or use env/keychain indirection) and resend."
+        )
         print(json.dumps({"decision": "block", "reason": reason}))
         print(reason, file=sys.stderr)
-        return 2
+        return 0
     return 0
 
 
