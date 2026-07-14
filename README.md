@@ -117,10 +117,15 @@ External org writes use task-scoped, TTL-bound write intents with connector-nati
 
 ## Development
 
+Local verification is the release gate; CI (when available) is best-effort duplication, never the authority.
+
 ```bash
 npm ci
-npm test                      # setup, task/evidence flows, adapters, gates, restore
+npm test                      # setup, task/evidence flows, adapters, gates, orchestration, restore
+npm run preflight             # the full local gate: syntax checks, verify-gates,
+                              # the suite from a fresh clone of HEAD, and a second
+                              # suite run under a simulated macOS TMPDIR
 ./bin/agent-harness verify-gates
 ```
 
-CI runs the full suite on Ubuntu and macOS. The test suite exercises no-clone setup, runtime self-containment, profile generation, task/evidence flows, PR-review smoke paths, write intents, gate verification, adapter installs (Claude settings hooks, Cursor hooks, opencode, pi), and uninstall/restore.
+The test suite exercises no-clone setup, runtime self-containment, profile generation, task/evidence flows, PR-review smoke paths, write intents, gate verification, adapter installs (Claude settings hooks, Cursor hooks, opencode, pi), orchestration (dynamic plans, fix loops, bounded blocking), and uninstall/restore. Run `npm run preflight` before merging anything.

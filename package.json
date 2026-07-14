@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "./tests/run.sh",
+    "preflight": "./tests/preflight.sh",
     "self-check": "./bin/agent-harness self-check"
   },
   "dependencies": {

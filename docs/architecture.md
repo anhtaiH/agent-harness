@@ -32,6 +32,6 @@ Runtime state is intentionally excluded from the source repo. Tasks, worktrees, 
 
 ## Verification chain
 
-`doctor` (files, config, MCP self-test, leak/sensitive scans) → `verify-gates` (behavioral proof: canned payloads through every hook, asserted allow/ask/deny) → `eval run` (templates + MCP + gates, recorded to JSONL). The same checks run in CI on Ubuntu and macOS.
+`doctor` (files, config, MCP self-test, leak/sensitive scans) → `verify-gates` (behavioral proof: canned payloads through every hook, asserted allow/ask/deny) → `eval run` (templates + MCP + gates, recorded to JSONL) → `npm run preflight` (the release gate: syntax checks across all shipped languages, gate verification, the full suite from a fresh clone of HEAD, and a second suite run under a simulated macOS TMPDIR). Local preflight is authoritative; the GitHub Actions workflow merely mirrors it when available.
 
 For the product-facing lifecycle and diagrams, see [How It Works](how-it-works.md).
