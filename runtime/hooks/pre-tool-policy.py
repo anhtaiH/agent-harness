@@ -200,12 +200,20 @@ def decide(payload: dict[str, Any]) -> tuple[str, str]:
     normalized = text.replace("~/", HOME + "/").replace("$HOME/", HOME + "/")
     is_exec_tool = bool(EXEC_TOOL_RE.search(name)) or not name
 
-    if SENSITIVE_PATH_RE.search(normalized):
-        return "deny", "Agent harness: blocked access to a credential or secret file path. Use scoped config or ask the human."
+    m = SENSITIVE_PATH_RE.search(normalized)
+    if m:
+        return "deny", (
+            f"Agent harness: blocked access to a credential/secret file path (matched {m.group(2)!r}). "
+            "Reference the secret by name or ask the human; to probe gates deliberately run `agent-harness verify-gates`."
+        )
     if is_exec_tool and REMOTE_EXEC_RE.search(normalized):
-        return "deny", "Agent harness: blocked piping remote content into an interpreter. Download, inspect, then run explicitly."
-    if is_exec_tool and LEAK_TOOL_RE.search(normalized):
-        return "deny", "Agent harness: blocked a possible secret-exfiltration pattern."
+        return "deny", "Agent harness: blocked piping remote content into an interpreter. Download to a file, inspect it, then run it explicitly."
+    m = LEAK_TOOL_RE.search(normalized)
+    if is_exec_tool and m:
+        return "deny", (
+            f"Agent harness: blocked a likely secret-exfiltration pattern (an archive/copy/upload tool touching {m.group(2)!r}). "
+            "If this is legitimate, narrow it off credential paths or ask the human to run it."
+        )
     if is_exec_tool and PROD_RE.search(normalized):
         return "deny", "Agent harness: production-affecting command requires explicit human-owned scope (see task packet stop conditions)."
     if is_exec_tool and FORCE_PUSH_RE.search(normalized):
