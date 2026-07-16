@@ -4,16 +4,36 @@ Agent Harness separates generic machinery from local project knowledge.
 
 ```mermaid
 flowchart LR
-  User["Human gives intent"] --> Agent["Codex / Claude / Cursor"]
-  Agent --> MCP["Harness MCP tools"]
+  User["Human gives intent"] --> Agent["Claude Code / Codex / Cursor / opencode / pi"]
+  Agent --> MCP["Harness MCP tools or CLI"]
+  Agent -.-> Gates["Native hook gates (policy engine)"]
   MCP --> Runtime["Local runtime"]
   Runtime --> Packet["Task packet"]
   Runtime --> Worktree["Harness worktree"]
   Runtime --> Evidence["Evidence gate"]
   Runtime --> Memory["Local memory inbox"]
-  Runtime --> Review["Peer review lanes"]
+  Runtime --> Review["Review lanes + subagents"]
   Runtime --> Dashboard["Dashboard"]
 ```
+
+## Gate Flow
+
+Every tool surface routes risky actions through one policy engine, wired into that tool's native hook system at setup:
+
+```mermaid
+flowchart LR
+  CC["Claude Code settings.json hooks"] --> Engine["pre-tool-policy.py"]
+  Cur["Cursor hooks.json"] --> Bridge["cursor-bridge.py"] --> Engine
+  OC["opencode plugin tool.execute.before"] --> Engine
+  PI["pi extension tool_call"] --> Engine
+  Engine --> Decision{"allow / ask / deny"}
+  Decision -->|deny| Blocked["Blocked with reason fed back to the agent"]
+  Decision -->|ask| Human["Human confirms"]
+  Stop["Stop hook"] --> EvidenceGate["active task has passing evidence?"]
+  EvidenceGate -->|no| BlockStop["Stop blocked: finish through evidence"]
+```
+
+`agent-harness verify-gates` pipes canned payloads through every hook and asserts the decision — the guardrails are tested behavior, not documentation.
 
 ## Runtime Architecture
 

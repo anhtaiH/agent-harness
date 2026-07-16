@@ -1,0 +1,37 @@
+# Best-effort mirror of the local gate. `npm run preflight` on a developer
+# machine is the release authority; do not treat a green (or absent) run here
+# as verification.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: npm ci
+      - name: Run test suite
+        run: npm test
+      - name: Run preflight (fresh-clone gate)
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run preflight -- --skip-macos-sim

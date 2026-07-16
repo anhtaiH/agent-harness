@@ -55,6 +55,23 @@ npx --yes github:anhtaiH/agent-harness setup --yes --shim-dir /path/to/bin
 
 Use `--force` only when you are replacing a managed harness shim.
 
+## Gates Do Not Fire (Or Fire Too Much)
+
+Prove behavior first:
+
+```bash
+agent-harness verify-gates
+```
+
+All cases must pass. If a real session still is not gated:
+
+- Claude Code: check `~/.claude/settings.json` contains the harness `hooks` entries (rerun setup if a tool update reset them; hooks changes require a new session).
+- Cursor: check `~/.cursor/hooks.json` lists `cursor-bridge.py` under `beforeShellExecution`.
+- opencode: check `~/.config/opencode/plugins/agent-harness.js` exists; run `opencode run --print-logs` to see plugin errors.
+- pi: check `~/.pi/agent/extensions/agent-harness.ts` exists.
+
+If the Stop gate blocks a session you consider done: finish properly (`write_evidence` → `evidence_doctor` → `finish_task`), or abandon explicitly (`finish_task --force`), or set `AGENT_HARNESS_SKIP_STOP_GATE=1` for that session. Active tasks expire after 24h, so a forgotten task never nags forever.
+
 ## Remove The Runtime
 
 ```bash

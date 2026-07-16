@@ -1,15 +1,15 @@
 ---
 name: pr-review-router
-description: Route pull request reviews into the local draft-only PR review harness.
+description: Route pull request reviews into the draft-only PR review harness. Use for PR numbers, PR URLs, branch reviews, or review queues. Output stays private draft material; nothing is posted to GitHub without an explicit user ask plus a matching write intent.
 ---
 
 # PR Review Router
 
-Use this for PR numbers, PR URLs, local branch reviews, and review queues.
+For any PR review request:
 
-1. Call `pr_review_start`.
-2. Read PR body, changed files, risk, and context artifacts before asking for author proof.
-3. Prefer `pr_review_run` with `lane: auto` for the first fast private pass.
-4. Synthesize through `pr_review_synthesize`.
-5. Keep output draft-only unless the user explicitly asks to post and a GitHub `review-comment` write intent exists.
-6. Favor fewer high-confidence comments over broad speculative coverage.
+1. `pr_review_start` builds the packet: metadata, diff, changed files, risk classification, required lenses.
+2. Read the PR body, risk, and context artifacts before asking the author for anything.
+3. `pr_review_run` with `lane: auto` for the fast private pass; escalate lanes only when risk or evidence justifies it.
+4. `pr_review_synthesize` produces the public-comments draft: fewer, high-confidence comments beat broad speculation.
+5. Draft-only is the default and is enforced: posting requires the user's explicit ask AND a GitHub `review-comment` write intent, or the policy gate denies the write.
+6. Record outcomes with `pr_review_feedback` so precision is measurable over time.

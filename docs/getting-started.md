@@ -1,8 +1,14 @@
 # Getting Started
 
-## 1. Run Setup
+## 1. Install
 
-From the repo you want agents to work on:
+The recommended path: let your coding agent install it. Paste into Claude Code, Codex, Cursor, opencode, or pi (a session with shell access):
+
+```text
+Read https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Report doctor --json and verify-gates --json results when done.
+```
+
+Or run it yourself from the repo you want agents to work on:
 
 ```bash
 npx --yes github:anhtaiH/agent-harness setup
@@ -10,9 +16,9 @@ npx --yes github:anhtaiH/agent-harness setup
 
 Use `--yes` for unattended setup. Use `--workspace <name>` when one machine has multiple projects.
 
-Setup creates a local runtime, detects installed tools, installs managed app adapters when safe, writes adapter snippets, installs shims, generates a local profile, and runs `doctor`.
+Setup creates a local runtime, detects installed tools (Claude Code, Codex, Cursor, opencode, pi), wires policy gates into each tool's native hook system, installs skills/subagents where supported, registers MCP, installs shims, generates a local profile, and runs `doctor`.
 
-After a successful setup, the normal next step is to open Codex, Claude, or Cursor in the repo and ask for work in natural language. You should not need to paste runtime paths into the agent.
+After a successful setup, open your agent in the repo and ask for work in natural language. You should not need to paste runtime paths into the agent.
 
 ## 2. Ask An Agent
 
@@ -40,11 +46,12 @@ Resume my latest harness task and tell me the next recommended action.
 
 ```bash
 agent-harness doctor
+agent-harness verify-gates
 agent-harness where
 agent-harness open
 ```
 
-`where` shows the runtime, source bundle, configured repos, dashboard, adapter snippets, and installed app adapters. `open` prints the dashboard path or opens it with `--browser`.
+`doctor` checks files, config, and the MCP server. `verify-gates` proves the guardrails fire (canned secret reads, `curl | sh`, force pushes, and stop-without-evidence payloads must come back denied). `where` shows the runtime, source bundle, configured repos, dashboard, adapter snippets, and installed app adapters. `open` prints the dashboard path or opens it with `--browser`.
 
 ## 4. Upgrade Or Remove
 

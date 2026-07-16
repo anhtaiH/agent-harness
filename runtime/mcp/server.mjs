@@ -5,9 +5,10 @@ import { readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = process.env.AGENT_HARNESS_ROOT || path.join(os.homedir(), ".agent-harness", process.env.AGENT_HARNESS_WORKSPACE || "default");
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = process.env.AGENT_HARNESS_ROOT || path.resolve(SCRIPT_DIR, "..");
 
 function configuredSourceRoot() {
   try {
@@ -18,6 +19,21 @@ function configuredSourceRoot() {
   }
 }
 
+function packageVersion() {
+  const sourceRoot = configuredSourceRoot();
+  for (const candidate of [sourceRoot ? path.join(sourceRoot, "package.json") : null].filter(Boolean)) {
+    try {
+      const data = JSON.parse(readFileSync(candidate, "utf8"));
+      if (typeof data.version === "string") return data.version;
+    } catch {
+      // fall through to the static fallback
+    }
+  }
+  return "0.0.0";
+}
+
+const VERSION = packageVersion();
+
 async function importPackage(packageName, relativePaths) {
   try {
     return await import(packageName);
@@ -27,6 +43,10 @@ async function importPackage(packageName, relativePaths) {
     const candidates = paths.flatMap((relativePath) =>
       [
         sourceRoot ? path.join(sourceRoot, "node_modules", ...relativePath) : null,
+        // Installed layout: <runtime>/mcp/server.mjs next to <runtime>/source/agent-harness/node_modules
+        path.join(SCRIPT_DIR, "..", "source", "agent-harness", "node_modules", ...relativePath),
+        // Source-repo layout: <repo>/runtime/mcp/server.mjs next to <repo>/node_modules
+        path.join(SCRIPT_DIR, "..", "..", "node_modules", ...relativePath),
         path.join(os.homedir(), "node_modules", ...relativePath),
       ].filter(Boolean)
     );
@@ -58,6 +78,7 @@ const toolNames = [
   "read_artifact",
   "record_progress",
   "write_evidence",
+  "run_check",
   "evidence_doctor",
   "finish_task",
   "agent_capabilities",
@@ -75,8 +96,13 @@ const toolNames = [
   "external_write_doctor",
   "memory_query",
   "memory_candidate",
+  "memory_promote",
   "profile_generate",
   "self_check",
+  "verify_gates",
+  "orchestrate_plan",
+  "orchestrate_run",
+  "orchestrate_status",
 ];
 const resourceUris = ["agent-harness://tasks/latest", "agent-harness://dashboard", "agent-harness://memory/index"];
 const promptNames = ["start-from-description", "resume-latest", "finish-with-evidence", "review-pr"];
@@ -169,7 +195,7 @@ async function readIfExists(filePath, fallback) {
 
 const server = new FastMCP({
   name: "agent-harness",
-  version: "0.1.0",
+  version: VERSION,
   instructions: "Local agent harness control plane. Use task packets, generated profiles, evidence, review lanes, and write intents. Do not use this server as a generic shell.",
   roots: { enabled: false },
 });
@@ -184,12 +210,14 @@ server.addTool({
     kind: z.string().optional(),
     risk: z.string().optional(),
     mode: z.enum(["plan", "run", "yolo"]).optional(),
+    verify_cmd: z.string().optional(),
   }),
   execute: async (args) => {
     const command = ["start"];
     if (args.repo) command.push(args.repo);
     command.push("--prompt", args.description, "--kind", args.kind || "general", "--risk", args.risk || "auto", "--mode", args.mode || "run", "--json");
     if (args.task_id) command.push("--task-id", args.task_id);
+    if (args.verify_cmd) command.push("--verify-cmd", args.verify_cmd);
     return runHarness(command, { json: true });
   },
 });
@@ -224,17 +252,50 @@ server.addTool({
 
 server.addTool({
   name: "write_evidence",
-  description: "Write or replace task evidence.",
-  parameters: z.object({ task_id: taskId, content: safeText.optional(), summary: z.string().optional(), positive_proof: z.string().optional(), negative_proof: z.string().optional(), commands_run: z.string().optional() }),
+  description: "Write or replace task evidence. Omitted results are recorded as NOT VERIFIED, never fabricated as PASS. For strict (yellow/red) tasks, back PASS claims with a run_check transcript.",
+  parameters: z.object({
+    task_id: taskId,
+    content: safeText.optional(),
+    summary: z.string().optional(),
+    positive_proof: z.string().optional(),
+    positive_result: z.string().optional(),
+    negative_proof: z.string().optional(),
+    negative_result: z.string().optional(),
+    commands_run: z.string().optional(),
+    skipped_checks: z.string().optional(),
+    diff_risk_notes: z.string().optional(),
+    memory_candidates: z.string().optional(),
+  }),
   execute: async (args) => {
     const command = ["evidence", "write", args.task_id, "--json"];
-    if (args.content) command.push("--content", args.content);
-    if (args.summary) command.push("--summary", args.summary);
-    if (args.positive_proof) command.push("--positive-proof", args.positive_proof);
-    if (args.negative_proof) command.push("--negative-proof", args.negative_proof);
-    if (args.commands_run) command.push("--commands-run", args.commands_run);
+    for (const [flag, value] of [
+      ["--content", args.content],
+      ["--summary", args.summary],
+      ["--positive-proof", args.positive_proof],
+      ["--positive-result", args.positive_result],
+      ["--negative-proof", args.negative_proof],
+      ["--negative-result", args.negative_result],
+      ["--commands-run", args.commands_run],
+      ["--skipped-checks", args.skipped_checks],
+      ["--diff-risk-notes", args.diff_risk_notes],
+      ["--memory-candidates", args.memory_candidates],
+    ]) {
+      if (value) command.push(flag, value);
+    }
     return runHarness(command, { json: true });
   },
+});
+server.addTool({
+  name: "run_check",
+  description: "Run a verification command and record a tamper-evident transcript to the task's checks ledger. The deterministic anti-hallucination primitive: strict evidence must cite a passing check.",
+  parameters: z.object({ task_id: taskId, command: z.array(z.string()).min(1), timeout: z.number().int().min(1).max(3600).optional() }),
+  execute: async (args) => runHarness(["run-check", "--json", ...(args.timeout ? ["--timeout", String(args.timeout)] : []), args.task_id, "--", ...args.command], { json: true, timeoutMs: (args.timeout || 600) * 1000 + 10000 }),
+});
+server.addTool({
+  name: "memory_promote",
+  description: "Promote an inbox memory candidate into curated claims.jsonl (or failures.jsonl with failure=true).",
+  parameters: z.object({ inbox_file: z.string().optional(), claim: z.string().optional(), source: z.string().optional(), confidence: z.string().optional(), failure: z.boolean().optional(), remove: z.boolean().optional() }),
+  execute: async (args) => runHarness(["memory", "promote", ...(args.inbox_file ? [args.inbox_file] : []), ...(args.claim ? ["--claim", args.claim] : []), ...(args.source ? ["--source", args.source] : []), ...(args.confidence ? ["--confidence", args.confidence] : []), ...(args.failure ? ["--failure"] : []), ...(args.remove ? ["--remove"] : [])], { json: true }),
 });
 
 server.addTool({ name: "evidence_doctor", description: "Validate evidence for a task.", parameters: z.object({ task_id: taskId.optional() }), execute: async (args) => runHarness(["evidence", "doctor", args.task_id || "latest", "--json"], { json: true }) });
@@ -266,6 +327,37 @@ server.addTool({ name: "memory_query", description: "Query curated local memory.
 server.addTool({ name: "memory_candidate", description: "Append a source-backed local memory candidate.", parameters: z.object({ claim: z.string(), source: z.string(), confidence: z.string().optional() }), execute: async (args) => runHarness(["memory", "candidate", "--claim", args.claim, "--source", args.source, "--confidence", args.confidence || "medium"], { json: true }) });
 server.addTool({ name: "profile_generate", description: "Generate or refresh the local workspace profile from a repo checkout.", parameters: z.object({ repo: z.string(), repo_alias: z.string().optional() }), execute: async (args) => runHarness(["profile", "generate", "--repo", args.repo, ...(args.repo_alias ? ["--repo-alias", args.repo_alias] : []), "--json"], { json: true }) });
 server.addTool({ name: "self_check", description: "Run harness self-check.", parameters: z.object({}), execute: async () => runHarness(["self-check", "--json"], { json: true, timeoutMs: 300000 }) });
+server.addTool({
+  name: "verify_gates",
+  description: "Prove the guardrail hooks fire: run canned allow/ask/deny payloads through every policy hook and return the case-by-case results.",
+  parameters: z.object({ record: z.boolean().optional() }),
+  execute: async (args) => runHarness(["verify-gates", ...(args.record ? ["--record"] : []), "--json"], { json: true, timeoutMs: 120000 }),
+});
+server.addTool({
+  name: "orchestrate_plan",
+  description: "Decompose a harness task into a role-based step plan (planner agent with deterministic fallback). Steps: researcher/worker/qa/reviewer/security/synthesizer.",
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_steps: z.number().int().min(3).max(24).optional(), dry_run: z.boolean().optional() }),
+  execute: async (args) => runHarness(["orchestrate", "plan", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_steps ? ["--max-steps", String(args.max_steps)] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 900000 }),
+});
+server.addTool({
+  name: "orchestrate_run",
+  description: "Run the orchestration plan autonomously: gated role steps (QA must PASS, reviewer must APPROVE, security must clear), bounded fix loops, then evidence and finish. Long-running.",
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), step_timeout: z.number().int().min(30).max(3600).optional(), retry_blocked: z.boolean().optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional() }),
+  execute: async (args) => {
+    const maxIterations = args.max_iterations || 20;
+    const stepTimeout = args.step_timeout || 600;
+    // Size the outer timeout from the conductor's worst case so the MCP layer
+    // never kills a live run (which would orphan an agent and double-dispatch on retry).
+    const timeoutMs = maxIterations * stepTimeout * 1000 + 120000;
+    return runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), "--max-iterations", String(maxIterations), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), "--step-timeout", String(stepTimeout), ...(args.retry_blocked ? ["--retry-blocked"] : []), ...(args.no_finish ? ["--no-finish"] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs });
+  },
+});
+server.addTool({
+  name: "orchestrate_status",
+  description: "Show the orchestration plan state and recent ledger events for a task.",
+  parameters: z.object({ task_id: taskId.optional() }),
+  execute: async (args) => runHarness(["orchestrate", "status", args.task_id || "latest"], { json: true }),
+});
 
 server.addResource({ uri: "agent-harness://tasks/latest", name: "Latest Agent Harness Task", mimeType: "text/markdown", load: async () => ({ text: await readIfExists(path.join(STATUS_DIR, "latest.md"), "No latest task status has been generated yet.\n") }) });
 server.addResource({ uri: "agent-harness://dashboard", name: "Agent Harness Dashboard", mimeType: "text/html", load: async () => ({ text: await readIfExists(path.join(STATUS_DIR, "index.html"), "Run the status tool to generate the dashboard.\n") }) });
@@ -278,7 +370,7 @@ server.addPrompt({ name: "review-pr", description: "Review a PR through the draf
 
 if (process.argv.includes("--self-test")) {
   const envProbe = scrubbedEnv();
-  console.log(JSON.stringify({ name: "agent-harness", version: "0.1.0", tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
+  console.log(JSON.stringify({ name: "agent-harness", version: VERSION, tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
 } else {
   server.start({ transportType: "stdio" });
 }
