@@ -58,20 +58,26 @@ def fresh(entry: dict[str, Any]) -> bool:
     return datetime.now(timezone.utc) - updated < timedelta(hours=ACTIVE_TASK_TTL_HOURS)
 
 
-def active_task_for_cwd(cwd: str) -> str | None:
+def active_tasks_for_cwd(cwd: str) -> list[str]:
+    """All fresh tasks whose repo path contains cwd, longest-prefix first.
+
+    Both sides are realpath-normalized so a repo under a symlinked path (e.g.
+    /tmp -> /private/tmp) still matches the resolved path stored at task start.
+    """
     try:
         active = json.loads((ROOT / "state" / "active-tasks.json").read_text())
     except Exception:
-        return None
-    best_path = ""
-    best_task = None
-    for repo_path, entry in active.items():
-        if not isinstance(entry, dict) or not entry.get("task_id") or not fresh(entry):
+        return []
+    cwd = os.path.realpath(cwd)
+    matches = []
+    for key, entry in active.items():
+        if not isinstance(entry, dict) or not fresh(entry):
             continue
-        if (cwd == repo_path or cwd.startswith(repo_path.rstrip("/") + "/")) and len(repo_path) > len(best_path):
-            best_path = repo_path
-            best_task = str(entry["task_id"])
-    return best_task
+        repo_path = os.path.realpath(str(entry.get("repo_path") or key))
+        task_id = str(entry.get("task_id") or key)
+        if cwd == repo_path or cwd.startswith(repo_path.rstrip("/") + "/"):
+            matches.append((len(repo_path), task_id))
+    return [task_id for _, task_id in sorted(matches, reverse=True)]
 
 
 def block(reason: str) -> int:
@@ -97,29 +103,30 @@ def main() -> int:
     # The env task id binds only when the wrapper explicitly demanded evidence
     # (interactive wrapper sessions). Print-mode / peer-lane runs export the
     # task id for artifact routing but must not be stop-gated.
-    task_id = None
+    candidates: list[str] = []
     if os.environ.get("AGENT_HARNESS_REQUIRE_EVIDENCE") == "1":
-        task_id = os.environ.get("AGENT_HARNESS_TASK_ID")
-        if not task_id:
+        env_task = os.environ.get("AGENT_HARNESS_TASK_ID")
+        if not env_task:
             print("AGENT_HARNESS_REQUIRE_EVIDENCE=1 but AGENT_HARNESS_TASK_ID is unset.", file=sys.stderr)
             return 2
-    if not task_id:
-        task_id = active_task_for_cwd(str(payload.get("cwd") or os.getcwd()))
-    if not task_id:
-        return 0
-    if not (ROOT / "tasks" / task_id / "task.json").exists():
-        return 0  # never gate on a task that was never started
-
-    evidence = ROOT / "tasks" / task_id / "evidence.md"
-    if not evidence.exists():
-        return block(
-            f"Harness task {task_id} is active but has no evidence.md. "
-            f"Write evidence (write_evidence or `harness evidence write {task_id} ...`) and call finish_task, "
-            "or finish/abandon the task explicitly before stopping."
-        )
-    failures = validate(evidence.read_text(errors="replace"))
-    if failures:
-        return block(f"Evidence for task {task_id} is incomplete: " + "; ".join(failures))
+        candidates = [env_task]
+    else:
+        candidates = active_tasks_for_cwd(str(payload.get("cwd") or os.getcwd()))
+    # Block on the first active task (that was actually started) lacking complete
+    # evidence — so a second task in the same repo can't hide the first's gate.
+    for task_id in candidates:
+        if not (ROOT / "tasks" / task_id / "task.json").exists():
+            continue
+        evidence = ROOT / "tasks" / task_id / "evidence.md"
+        if not evidence.exists():
+            return block(
+                f"Harness task {task_id} is active but has no evidence.md. "
+                f"Write evidence (write_evidence or `harness evidence write {task_id} ...`) and call finish_task, "
+                "or finish/abandon the task explicitly before stopping."
+            )
+        failures = validate(evidence.read_text(errors="replace"))
+        if failures:
+            return block(f"Evidence for task {task_id} is incomplete: " + "; ".join(failures))
     return 0
 
 

@@ -13,6 +13,10 @@ import argparse
 import concurrent.futures
 import contextlib
 from datetime import datetime, timedelta, timezone
+try:
+    import fcntl  # POSIX advisory locks; absent on Windows (harness targets Unix)
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore
 import fnmatch
 import hashlib
 import html
@@ -1674,7 +1678,9 @@ def resolve_repo(root: Path, repo_name: str | None) -> tuple[str, Path]:
     repos = repo_entries(config)
     if repo_name:
         if repo_name not in repos:
-            raise HarnessError(f"Unknown repo alias: {repo_name}")
+            hint = ", ".join(sorted(repos)) or "none"
+            extra = " (this looks like a path, not an alias)" if "/" in repo_name else ""
+            raise HarnessError(f"Unknown repo alias: {repo_name}{extra}. Configured aliases: {hint} (see `agent-harness where`).")
         return repo_name, repos[repo_name]
     default = default_repo(config)
     if not default:
@@ -1820,14 +1826,17 @@ def load_active_tasks(root: Path) -> dict[str, Any]:
 
 
 def set_active_task(root: Path, repo_path: Path, task_id: str, mode: str) -> None:
+    # Keyed by task id (not repo path) so a second task in the same repo does not
+    # silently evict the first and drop its evidence gate.
     data = load_active_tasks(root)
-    data[str(repo_path)] = {"task_id": task_id, "mode": mode, "updated_at": utc_now()}
+    data.pop(str(repo_path), None)  # migrate any legacy repo-keyed entry for this task
+    data[task_id] = {"task_id": task_id, "repo_path": str(repo_path), "mode": mode, "updated_at": utc_now()}
     write_json(active_tasks_path(root), data)
 
 
 def clear_active_task(root: Path, task_id: str) -> None:
     data = load_active_tasks(root)
-    remaining = {key: value for key, value in data.items() if not (isinstance(value, dict) and value.get("task_id") == task_id)}
+    remaining = {key: value for key, value in data.items() if key != task_id and not (isinstance(value, dict) and value.get("task_id") == task_id)}
     if remaining != data:
         write_json(active_tasks_path(root), remaining)
 
@@ -1967,7 +1976,9 @@ def read_artifact(args: argparse.Namespace) -> int:
         "pr-brief": "pr-review/private-review-brief.md",
     }
     if args.artifact not in safe_names:
-        raise HarnessError(f"Unknown artifact: {args.artifact}")
+        raise HarnessError(f"Unknown artifact: {args.artifact}. Valid artifacts: {', '.join(sorted(safe_names))}.")
+    if not (task_dir(root, task_id) / "task.json").exists():
+        raise HarnessError(f"Task not found: {task_id}. Run `agent-harness status` to list tasks.")
     path = task_dir(root, task_id) / safe_names[args.artifact]
     if not path.exists():
         raise HarnessError(f"Artifact does not exist: {path}")
@@ -2693,12 +2704,34 @@ def quiet_call(func: Callable[[argparse.Namespace], int], ns: argparse.Namespace
         return func(ns)
 
 
+def acquire_run_lock(root: Path, task_id: str):
+    """Exclusive advisory lock so two conductors never drive one task at once.
+
+    Returns the held file object (kept alive for the run; the OS releases it on
+    process exit). Raises HarnessError if another conductor holds it.
+    """
+    if fcntl is None:
+        return None
+    lock_path = orchestration_dir(root, task_id)
+    lock_path.mkdir(parents=True, exist_ok=True)
+    handle = (lock_path / "run.lock").open("w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise HarnessError(f"Another conductor is already running task {task_id} (orchestration/run.lock held). Wait for it or check `harness orchestrate status {task_id}`.")
+    handle.write(f"{os.getpid()} {utc_now()}\n")
+    handle.flush()
+    return handle
+
+
 def orchestrate_run(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
     manifest = load_json(task_dir(root, task_id) / "task.json", {})
     if not manifest:
         raise HarnessError(f"Task not found: {task_id}")
+    _run_lock = acquire_run_lock(root, task_id)  # noqa: F841 (held for the run's lifetime)
     if not (orchestration_dir(root, task_id) / "plan.json").exists():
         quiet_call(orchestrate_plan, argparse.Namespace(runtime_root=str(root), task_id=task_id, agent=args.agent, dry_run=args.dry_run, max_steps=args.max_steps, step_timeout=args.step_timeout, json=False))
     plan = load_plan(root, task_id)
@@ -2729,11 +2762,20 @@ def orchestrate_run(args: argparse.Namespace) -> int:
             orch_ledger(root, task_id, "retry-blocked", reset=reset)
         save_plan(root, task_id, plan)
 
-    # Watchdog (resume safety): a step left "running" by a crashed conductor is retried.
+    # Watchdog (resume safety): requeue a step left "running" only when it is
+    # genuinely stale (older than the step timeout). We hold the run lock, so no
+    # live sibling owns it; the age check is belt-and-suspenders for a crash mid-step.
+    now = datetime.now(timezone.utc)
     for step in steps:
         if step["status"] == "running":
-            step["status"] = "pending"
-            orch_ledger(root, task_id, "step-requeued-stale", step=step["id"])
+            try:
+                started = datetime.fromisoformat(str(step.get("started_at", "")).replace("Z", "+00:00"))
+                stale = (now - started).total_seconds() > args.step_timeout
+            except (ValueError, TypeError):
+                stale = True
+            if stale:
+                step["status"] = "pending"
+                orch_ledger(root, task_id, "step-requeued-stale", step=step["id"])
 
     iterations = 0
     while iterations < args.max_iterations:
@@ -3500,7 +3542,7 @@ def build_gate_fixture(fixture_root: Path, kind: str) -> Path:
     write_json(task_dir_ / "task.json", {"task_id": "gate-check", "status": "started", "created_at": utc_now()})
     write_json(
         fixture_root / "state" / "active-tasks.json",
-        {str(repo): {"task_id": "gate-check", "mode": "run", "updated_at": utc_now()}},
+        {"gate-check": {"task_id": "gate-check", "repo_path": str(repo), "mode": "run", "updated_at": utc_now()}},
     )
     evidence = task_dir_ / "evidence.md"
     if kind == "active-task-template-evidence":
@@ -3706,6 +3748,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-harness",
         description="Product-style local control plane for agentic engineering.",
+        epilog=(
+            "Task flow: start -> (work) -> run-check -> evidence write -> evidence doctor -> finish.\n"
+            "Autonomous: orchestrate plan -> orchestrate run. Health: doctor, verify-gates, where, retro.\n"
+            "Docs: docs/getting-started.md and docs/orchestration.md."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {package_version()}")
     parser.add_argument("--runtime-root", help="Override runtime root")
@@ -3738,7 +3786,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_p.add_argument("--json", action="store_true")
     install_p.set_defaults(func=install)
 
-    uninstall_p = sub.add_parser("uninstall")
+    uninstall_p = sub.add_parser("uninstall", help="Remove the runtime and (by default) restore all managed adapters")
     uninstall_p.add_argument("--workspace", default=argparse.SUPPRESS)
     uninstall_p.add_argument("--runtime-root", default=argparse.SUPPRESS)
     uninstall_p.add_argument("--dry-run", action="store_true")
@@ -3783,7 +3831,7 @@ def build_parser() -> argparse.ArgumentParser:
     ip.add_argument("--json", action="store_true")
     ip.set_defaults(func=install_prompt)
 
-    profile_p = sub.add_parser("profile")
+    profile_p = sub.add_parser("profile", help="Generate the source-backed workspace profile from a repo")
     profile_sub = profile_p.add_subparsers(dest="profile_cmd", required=True)
     gen_p = profile_sub.add_parser("generate")
     gen_p.add_argument("--repo", required=True)
@@ -3793,7 +3841,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen_p.add_argument("--json", action="store_true")
     gen_p.set_defaults(func=profile_generate)
 
-    start_p = sub.add_parser("start")
+    start_p = sub.add_parser("start", help="Start a task packet. Flow: start -> (work) -> run-check -> evidence write -> evidence doctor -> finish")
     start_p.add_argument("repo", nargs="?")
     start_p.add_argument("--prompt", required=True)
     start_p.add_argument("--task-id")
@@ -3804,27 +3852,27 @@ def build_parser() -> argparse.ArgumentParser:
     start_p.add_argument("--json", action="store_true")
     start_p.set_defaults(func=start_task)
 
-    resume_p = sub.add_parser("resume")
+    resume_p = sub.add_parser("resume", help="Resume a task (default: latest) and re-arm its evidence gate")
     resume_p.add_argument("task_id", nargs="?", default="latest")
     resume_p.add_argument("--json", action="store_true")
     resume_p.set_defaults(func=resume_task)
 
-    status_p = sub.add_parser("status")
+    status_p = sub.add_parser("status", help="Show recent task status and refresh the dashboard")
     status_p.add_argument("--json", action="store_true")
     status_p.set_defaults(func=status)
 
-    read_p = sub.add_parser("read-artifact")
+    read_p = sub.add_parser("read-artifact", help="Print a safe task artifact (packet, progress, evidence, ...)")
     read_p.add_argument("task_id")
     read_p.add_argument("artifact")
     read_p.set_defaults(func=read_artifact)
 
-    progress_p = sub.add_parser("record-progress")
+    progress_p = sub.add_parser("record-progress", help="Append a checkpoint to a task's progress log")
     progress_p.add_argument("task_id")
     progress_p.add_argument("--note", required=True)
     progress_p.add_argument("--json", action="store_true")
     progress_p.set_defaults(func=record_progress)
 
-    evidence_p = sub.add_parser("evidence")
+    evidence_p = sub.add_parser("evidence", help="Write or validate task evidence (write | doctor)")
     evidence_sub = evidence_p.add_subparsers(dest="evidence_cmd", required=True)
     write_p = evidence_sub.add_parser("write")
     write_p.add_argument("task_id")
@@ -3855,13 +3903,13 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("command", nargs=argparse.REMAINDER, help="After `--`, the command to run")
     rc.set_defaults(func=run_check)
 
-    finish_p = sub.add_parser("finish")
+    finish_p = sub.add_parser("finish", help="Finish a task after its evidence passes the doctor (--force records an unverified finish)")
     finish_p.add_argument("task_id", nargs="?", default="latest")
     finish_p.add_argument("--force", action="store_true")
     finish_p.add_argument("--json", action="store_true")
     finish_p.set_defaults(func=finish_task)
 
-    wt_p = sub.add_parser("worktree")
+    wt_p = sub.add_parser("worktree", help="Create a harness-managed git worktree for a task")
     wt_sub = wt_p.add_subparsers(dest="worktree_cmd", required=True)
     wt_create = wt_sub.add_parser("create")
     wt_create.add_argument("repo")
@@ -3870,7 +3918,7 @@ def build_parser() -> argparse.ArgumentParser:
     wt_create.add_argument("--json", action="store_true")
     wt_create.set_defaults(func=make_worktree)
 
-    agent_p = sub.add_parser("agent")
+    agent_p = sub.add_parser("agent", help="Peer-agent lanes (capabilities | run) for cross-tool review")
     agent_sub = agent_p.add_subparsers(dest="agent_cmd", required=True)
     caps_p = agent_sub.add_parser("capabilities")
     caps_p.set_defaults(func=agent_capabilities)
@@ -3885,7 +3933,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--json", action="store_true")
     run_p.set_defaults(func=agent_run)
 
-    review_p = sub.add_parser("review")
+    review_p = sub.add_parser("review", help="Independent review lanes for a task (plan | run | status | synthesize)")
     review_sub = review_p.add_subparsers(dest="review_cmd", required=True)
     for name, func in [("plan", review_plan), ("status", review_status), ("synthesize", review_synthesize)]:
         p = review_sub.add_parser(name)
@@ -3899,7 +3947,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("--dry-run", action="store_true")
     rr.set_defaults(func=review_run)
 
-    pr_p = sub.add_parser("pr-review")
+    pr_p = sub.add_parser("pr-review", help="Draft-only PR review flow (start | run | synthesize | feedback)")
     pr_sub = pr_p.add_subparsers(dest="pr_cmd", required=True)
     prs = pr_sub.add_parser("start")
     prs.add_argument("source")
@@ -3925,7 +3973,7 @@ def build_parser() -> argparse.ArgumentParser:
     prfb.add_argument("--note")
     prfb.set_defaults(func=pr_review_feedback)
 
-    ew_p = sub.add_parser("external-write")
+    ew_p = sub.add_parser("external-write", help="Task-scoped connector write intents (intent | status | doctor)")
     ew_sub = ew_p.add_subparsers(dest="external_cmd", required=True)
     ewi = ew_sub.add_parser("intent")
     ewi.add_argument("task_id")
@@ -3941,7 +3989,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("task_id", nargs="?", default="latest")
         p.set_defaults(func=func)
 
-    mem_p = sub.add_parser("memory")
+    mem_p = sub.add_parser("memory", help="Local memory (query | candidate | promote)")
     mem_sub = mem_p.add_subparsers(dest="memory_cmd", required=True)
     mq = mem_sub.add_parser("query")
     mq.add_argument("query")
@@ -3963,7 +4011,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument("--json", action="store_true", help="Output JSON (default; accepted for consistency)")
     mp.set_defaults(func=memory_promote)
 
-    metrics_p = sub.add_parser("metrics")
+    metrics_p = sub.add_parser("metrics", help="Export local metrics (see also: retro)")
     metrics_sub = metrics_p.add_subparsers(dest="metrics_cmd", required=True)
     export_p = metrics_sub.add_parser("export")
     export_p.set_defaults(func=metrics_export)
@@ -3983,14 +4031,14 @@ def build_parser() -> argparse.ArgumentParser:
     clean_p.add_argument("--json", action="store_true")
     clean_p.set_defaults(func=clean)
 
-    eval_p = sub.add_parser("eval")
+    eval_p = sub.add_parser("eval", help="Run harness self-evaluations (templates, MCP, gates)")
     eval_sub = eval_p.add_subparsers(dest="eval_cmd", required=True)
     er = eval_sub.add_parser("run")
     er.add_argument("which", nargs="?", default="all")
     er.add_argument("--no-record", action="store_true")
     er.set_defaults(func=eval_run)
 
-    sc = sub.add_parser("self-check")
+    sc = sub.add_parser("self-check", help="Low-level runtime integrity check (doctor is the friendly wrapper)")
     sc.add_argument("--source-root")
     sc.add_argument("--json", action="store_true")
     sc.set_defaults(func=self_check)
@@ -4042,6 +4090,14 @@ def main(argv: list[str] | None = None) -> int:
         # Never dump the full command/prompt in a traceback; report a bounded message.
         print(f"agent-harness: command timed out after {exc.timeout}s: {str(exc.cmd)[:120]}", file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        # A downstream consumer (`| head`, `| grep -q`) closed the pipe; exit
+        # quietly instead of dumping a traceback and (under pipefail) failing.
+        with contextlib.suppress(Exception):
+            sys.stdout.close()
+        with contextlib.suppress(Exception):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except KeyboardInterrupt:
         print("agent-harness: interrupted", file=sys.stderr)
         return 130

@@ -342,8 +342,15 @@ server.addTool({
 server.addTool({
   name: "orchestrate_run",
   description: "Run the orchestration plan autonomously: gated role steps (QA must PASS, reviewer must APPROVE, security must clear), bounded fix loops, then evidence and finish. Long-running.",
-  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional() }),
-  execute: async (args) => runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_iterations ? ["--max-iterations", String(args.max_iterations)] : []), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), ...(args.no_finish ? ["--no-finish"] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 3600000 }),
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), step_timeout: z.number().int().min(30).max(3600).optional(), retry_blocked: z.boolean().optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional() }),
+  execute: async (args) => {
+    const maxIterations = args.max_iterations || 20;
+    const stepTimeout = args.step_timeout || 600;
+    // Size the outer timeout from the conductor's worst case so the MCP layer
+    // never kills a live run (which would orphan an agent and double-dispatch on retry).
+    const timeoutMs = maxIterations * stepTimeout * 1000 + 120000;
+    return runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), "--max-iterations", String(maxIterations), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), "--step-timeout", String(stepTimeout), ...(args.retry_blocked ? ["--retry-blocked"] : []), ...(args.no_finish ? ["--no-finish"] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs });
+  },
 });
 server.addTool({
   name: "orchestrate_status",

@@ -38,7 +38,7 @@ agent-harness where --json
 If the shims are not on PATH yet, use the absolute runtime backend printed by setup (`<runtime>/bin/harness doctor --json`, etc.).
 
 Success criteria you must confirm before reporting done:
-1. `doctor` returns `"ok": true` (MCP self-test passed, runtime files executable, no leak/sensitive findings).
+1. `doctor` returns `"ok": true` **and** `"warnings": []`. A warning like "MCP self-test skipped" or "node unavailable" means the install is degraded (CLI-only) — report that honestly, do not claim a full install.
 2. `verify-gates` returns `"ok": true` with every case passed — this proves the guardrails actually fire (secret reads denied, `curl | sh` denied, force-push to main denied, stop-without-evidence blocked, benign commands allowed).
 3. `where` lists the adapters that were installed for the tools present on this machine.
 

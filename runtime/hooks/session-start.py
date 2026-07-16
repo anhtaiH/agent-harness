@@ -32,12 +32,14 @@ def active_task(cwd: str) -> dict | None:
         return None
     best_path = ""
     best = None
-    for repo_path, entry in active.items():
-        if not isinstance(entry, dict) or not entry.get("task_id"):
+    cwd = os.path.realpath(cwd)
+    for key, entry in active.items():
+        if not isinstance(entry, dict) or not (entry.get("task_id") or key):
             continue
-        if (cwd == repo_path or cwd.startswith(repo_path.rstrip("/") + "/")) and len(repo_path) > len(best_path):
+        repo_path = os.path.realpath(str(entry.get("repo_path") or key))
+        if (cwd == repo_path or cwd.startswith(repo_path.rstrip("/") + "/")) and len(repo_path) >= len(best_path):
             best_path = repo_path
-            best = entry
+            best = {"task_id": entry.get("task_id") or key, "mode": entry.get("mode", "run")}
     return best
 
 

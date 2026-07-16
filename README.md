@@ -4,6 +4,10 @@ Agent Harness is a personal, local control plane for agentic engineering — a m
 
 It is built for engineers who cannot (or should not) add harness config to their employer's repo: everything lives in `~/.agent-harness/<workspace>/` plus small, reversible, marker-delimited edits to your own user-level tool config.
 
+It is **not** an agent and not a service: it runs no models, hosts nothing, and only wraps the coding agents you already run.
+
+**Mental model.** You install once per machine. The **source repo** (this repo) is copied into a **runtime** (`~/.agent-harness/<workspace>/`) that holds all mutable state (tasks, evidence, memory, metrics). **Adapters** are small reversible edits telling each coding tool the runtime exists. **Gates** are hook scripts in the runtime that every tool calls (proven by `verify-gates`). **Orchestration** drives multi-role runs over a task. Layers: [docs/architecture.md](docs/architecture.md); diagrams: [docs/how-it-works.md](docs/how-it-works.md).
+
 ## Install (give this to your agent)
 
 The install interface is a prompt. Paste this into whichever coding agent you trust with shell access:
@@ -108,6 +112,8 @@ External org writes use task-scoped, TTL-bound write intents with connector-nati
 ## Learn more
 
 - [Getting Started](docs/getting-started.md)
+- [Architecture](docs/architecture.md)
+- [Orchestration](docs/orchestration.md)
 - [App Integrations](docs/app-integrations.md)
 - [How It Works](docs/how-it-works.md)
 - [Human-Agent Contract](docs/human-agent-contract.md)

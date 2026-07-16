@@ -126,9 +126,11 @@ def session_mode(payload: dict[str, Any]) -> str:
         return "run"
     best = ""
     best_mode = "run"
-    for repo_path, entry in active.items():
+    cwd = os.path.realpath(cwd)
+    for key, entry in active.items():
         if not isinstance(entry, dict):
             continue
+        repo_path = os.path.realpath(str(entry.get("repo_path") or key))
         if (cwd == repo_path or cwd.startswith(repo_path.rstrip("/") + "/")) and len(repo_path) > len(best):
             best = repo_path
             best_mode = str(entry.get("mode", "run"))

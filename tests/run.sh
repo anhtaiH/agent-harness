@@ -149,6 +149,32 @@ AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RU
 grep -q "retry-blocked" "$RUNTIME/tasks/ah-vfail/orchestration/ledger.jsonl"
 # Atomic writes leave no temp files behind
 if ls "$RUNTIME"/tasks/*/.task.json.tmp-* >/dev/null 2>&1; then echo "atomic write left temp files" >&2; exit 1; fi
+# Concurrency: a second conductor cannot acquire a held run lock
+python3 - "$RUNTIME" <<'PY'
+import sys; sys.path.insert(0, "src")
+import agent_harness as a
+from pathlib import Path
+root = Path(sys.argv[1]); (root/"tasks"/"locktest").mkdir(parents=True, exist_ok=True)
+h = a.acquire_run_lock(root, "locktest")
+assert h is not None, "lock not acquired"
+try:
+    a.acquire_run_lock(root, "locktest"); print("BUG: second lock acquired"); sys.exit(1)
+except a.HarnessError:
+    pass
+PY
+# Fail-open: a second task in the same repo must not evict the first's gate
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "task A" --task-id failopenA --risk green --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "task B" --task-id failopenB --risk green --json >/dev/null
+# The real fail-open fix: BOTH tasks are tracked (task B did not evict task A).
+python3 -c "import json,sys; d=json.load(open('$RUNTIME/state/active-tasks.json')); sys.exit(0 if ('failopenA' in d and 'failopenB' in d) else 1)"
+# And the stop gate still fires (blocks) with multiple active evidence-less tasks in the repo.
+fo_out="$(env AGENT_HARNESS_ROOT="$RUNTIME" python3 "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON || true
+{"cwd": "$REPO"}
+JSON
+)"
+echo "$fo_out" | grep -q '"decision": "block"'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" finish failopenA --force --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" finish failopenB --force --json >/dev/null
 # retro reports telemetry; clean prunes under retention with a safe dry-run
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" retro --json | grep -q '"tasks_finished"'
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" clean --dry-run --json | grep -q '"dry_run": true'
