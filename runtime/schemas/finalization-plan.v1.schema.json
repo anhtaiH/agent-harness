@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/finalization-plan.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "lifecycle_phase", "owned_object_identities", "containment_proof_digests", "finalizers", "predecessor_generation", "plan_digest"],
+  "properties": {
+    "schema": {"const": "agent-harness/finalization-plan"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "lifecycle_phase": {"type": "string", "minLength": 1},
+    "owned_object_identities": {"type": "array", "items": {"type": "object"}},
+    "containment_proof_digests": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "finalizers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "object_identity", "containment_proof_digest"],
+        "properties": {
+          "kind": {"type": "string", "minLength": 1},
+          "object_identity": {"type": "object"},
+          "containment_proof_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "predecessor_generation": {"type": "integer", "minimum": 0},
+    "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

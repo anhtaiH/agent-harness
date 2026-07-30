@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+
+if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/ah-authority-self-test.XXXXXX")"
+  cleanup() {
+    rm -rf "$WORK"
+  }
+  trap cleanup EXIT
+  SWIFTC="$(/usr/bin/xcrun --find swiftc)"
+  SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+  SDK_VERSION="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+  SDK_MAJOR="${SDK_VERSION%%.*}"
+  ARCH="$(/usr/bin/uname -m)"
+  SWIFT_MODULECACHE_PATH="$WORK/swift-module-cache" \
+    CLANG_MODULE_CACHE_PATH="$WORK/clang-module-cache" \
+    "$SWIFTC" -sdk "$SDK" -target "$ARCH-apple-macosx${SDK_MAJOR}.0" \
+      "$ROOT/runtime/authority/macos-broker.swift" \
+      -o "$WORK/macos-broker"
+  AGENT_HARNESS_AUTHORITY_SELF_TEST=1 "$WORK/macos-broker" --self-test
+  exit 0
+fi
+
+BINARY="${AGENT_HARNESS_AUTHORITY_BINARY:-}"
+[ -n "$BINARY" ] || {
+  echo "AGENT_HARNESS_AUTHORITY_BINARY must name the verified native broker" >&2
+  exit 1
+}
+case "$BINARY" in
+  /*) ;;
+  *)
+    echo "AGENT_HARNESS_AUTHORITY_BINARY must be absolute" >&2
+    exit 1
+    ;;
+esac
+[ -x "$BINARY" ] || {
+  echo "verified native authority broker is not executable" >&2
+  exit 1
+}
+
+canonical_path() {
+  local target="$1"
+  local link
+  local remaining=40
+  while [ -L "$target" ]; do
+    [ "$remaining" -gt 0 ] || return 1
+    remaining=$((remaining - 1))
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$(dirname "$target")/$link" ;;
+    esac
+  done
+  printf '%s/%s\n' \
+    "$(cd "$(dirname "$target")" && pwd -P)" \
+    "$(basename "$target")"
+}
+
+REAL="$(canonical_path "$BINARY")"
+[ "$REAL" = "$BINARY" ] || {
+  echo "verified native authority broker path is not canonical" >&2
+  exit 1
+}
+exec "$BINARY" "$@"

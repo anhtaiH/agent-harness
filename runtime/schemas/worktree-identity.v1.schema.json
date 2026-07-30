@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/worktree-identity.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "parent_enrollment_id", "path", "root_object_id", "git_dir", "git_dir_object_id", "common_dir", "common_dir_object_id", "root_commit", "remote_fingerprint", "enrollment_nonce"],
+  "properties": {
+    "schema": {"const": "agent-harness/worktree-identity"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "parent_enrollment_id": {"type": "string", "minLength": 1},
+    "path": {"type": "string", "pattern": "^/"},
+    "root_object_id": {"type": "object"},
+    "git_dir": {"type": "string", "pattern": "^/"},
+    "git_dir_object_id": {"type": "object"},
+    "common_dir": {"type": "string", "pattern": "^/"},
+    "common_dir_object_id": {"type": "object"},
+    "root_commit": {"type": "string", "minLength": 40},
+    "remote_fingerprint": {"type": "string", "minLength": 1},
+    "enrollment_nonce": {"type": "string", "minLength": 16}
+  },
+  "additionalProperties": true
+}

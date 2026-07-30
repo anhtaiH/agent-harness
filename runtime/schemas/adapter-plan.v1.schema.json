@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/adapter-plan.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "host", "plan_id", "source_commit", "operations", "collision_decisions", "plan_digest"],
+  "properties": {
+    "schema": {"const": "agent-harness/adapter-plan"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "host": {"type": "string", "minLength": 1},
+    "plan_id": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "minLength": 40},
+    "operations": {"type": "array", "items": {"type": "object"}},
+    "collision_decisions": {"type": "array", "items": {"type": "object"}},
+    "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

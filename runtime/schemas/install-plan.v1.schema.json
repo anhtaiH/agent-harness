@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/install-plan.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "runtime_root", "rollback_root", "source_commit", "source_content_identity", "setup_body_digest", "authority_bootstrap", "authority_bootstrap_digest", "adapter_plan_digests", "operations", "plan_digest"],
+  "properties": {
+    "schema": {"const": "agent-harness/install-plan"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "runtime_root": {"type": "string", "pattern": "^/"},
+    "rollback_root": {"type": "string", "pattern": "^/"},
+    "source_commit": {"type": "string", "minLength": 40},
+    "source_content_identity": {"type": "object"},
+    "setup_body_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authority_bootstrap": {"type": "object"},
+    "authority_bootstrap_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adapter_plan_digests": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "operations": {"type": "array", "items": {"type": "object"}},
+    "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

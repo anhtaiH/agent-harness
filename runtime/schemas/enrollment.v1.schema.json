@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/enrollment.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "repo_path", "root_object_id", "git_dir", "git_dir_object_id", "common_dir", "common_dir_object_id", "root_commit", "remote_fingerprint", "trusted_at"],
+  "properties": {
+    "schema": {"const": "agent-harness/enrollment"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "repo_path": {"type": "string", "pattern": "^/"},
+    "root_object_id": {"type": "object"},
+    "git_dir": {"type": "string", "pattern": "^/"},
+    "git_dir_object_id": {"type": "object"},
+    "common_dir": {"type": "string", "pattern": "^/"},
+    "common_dir_object_id": {"type": "object"},
+    "root_commit": {"type": "string", "minLength": 40},
+    "remote_fingerprint": {"type": "string", "minLength": 1},
+    "trusted_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

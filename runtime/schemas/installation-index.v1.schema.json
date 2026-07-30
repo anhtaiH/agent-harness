@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/installation-index.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "generation", "lifecycle_state", "publication_transaction", "predecessor_digest", "runtime_root", "rollback_root", "receipts", "receipt_count", "mac"],
+  "properties": {
+    "schema": {"const": "agent-harness/installation-index"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "generation": {"type": "integer", "minimum": 0},
+    "lifecycle_state": {"type": "string", "minLength": 1},
+    "publication_transaction": {"type": "string", "minLength": 1},
+    "predecessor_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtime_root": {"type": "string", "pattern": "^/"},
+    "rollback_root": {"type": "string", "pattern": "^/"},
+    "receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["receipt_id", "path", "digest"],
+        "properties": {
+          "receipt_id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "receipt_count": {"type": "integer", "minimum": 0},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

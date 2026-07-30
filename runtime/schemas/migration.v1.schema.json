@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/migration.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "from_version", "to_version", "source_digest", "result_digest", "rollback_transaction"],
+  "properties": {
+    "schema": {"const": "agent-harness/migration"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "from_version": {"type": "integer", "minimum": 1},
+    "to_version": {"type": "integer", "minimum": 1},
+    "source_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollback_transaction": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

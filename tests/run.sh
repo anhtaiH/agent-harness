@@ -3,6 +3,49 @@ set -euo pipefail
 trap 'echo "TEST FAILED at ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+python_binding_error() {
+  echo "$1" >&2
+  exit 1
+}
+
+[ -n "${AGENT_HARNESS_PYTHON:-}" ] ||
+  python_binding_error "AGENT_HARNESS_PYTHON must be set"
+case "$AGENT_HARNESS_PYTHON" in
+  /*) ;;
+  *) python_binding_error "AGENT_HARNESS_PYTHON must be an absolute path" ;;
+esac
+[ -x "$AGENT_HARNESS_PYTHON" ] ||
+  python_binding_error "AGENT_HARNESS_PYTHON must be executable"
+
+PYTHON_PROBE="$(
+  "$AGENT_HARNESS_PYTHON" -c \
+    'import os, sys; p = sys.argv[1]; s = os.stat(p); print(f"{os.path.realpath(p)}\t{sys.version_info.major}\t{sys.version_info.minor}\t{s.st_dev}:{s.st_ino}")' \
+    "$AGENT_HARNESS_PYTHON"
+)" || python_binding_error "AGENT_HARNESS_PYTHON probe failed"
+IFS=$'\t' read -r PYTHON_REAL PYTHON_MAJOR PYTHON_MINOR PYTHON_IDENTITY <<<"$PYTHON_PROBE"
+[ "$PYTHON_REAL" = "$AGENT_HARNESS_PYTHON" ] ||
+  python_binding_error "AGENT_HARNESS_PYTHON must be its canonical real path"
+if ! [[ "$PYTHON_MAJOR" =~ ^[0-9]+$ && "$PYTHON_MINOR" =~ ^[0-9]+$ ]] ||
+   [ "$PYTHON_MAJOR" -lt 3 ] ||
+   { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
+  python_binding_error "AGENT_HARNESS_PYTHON requires Python 3.10 or newer"
+fi
+
+if CURRENT_PYTHON_IDENTITY="$(/usr/bin/stat -f '%d:%i' "$AGENT_HARNESS_PYTHON" 2>/dev/null)"; then
+  :
+elif CURRENT_PYTHON_IDENTITY="$(/usr/bin/stat -Lc '%d:%i' "$AGENT_HARNESS_PYTHON" 2>/dev/null)"; then
+  :
+else
+  python_binding_error "AGENT_HARNESS_PYTHON changed after validation"
+fi
+[ "$CURRENT_PYTHON_IDENTITY" = "$PYTHON_IDENTITY" ] ||
+  python_binding_error "AGENT_HARNESS_PYTHON changed after validation"
+readonly AGENT_HARNESS_PYTHON
+
+PYTHONPATH="$ROOT/src" "$AGENT_HARNESS_PYTHON" -m unittest discover \
+  -s "$ROOT/tests/unit" -p 'test_*.py'
+
 TMP_BASE="${TMPDIR:-/tmp}"
 TMP_DIR="${TMP_BASE%/}/agent-harness-test-$$"
 RUNTIME="$TMP_DIR/runtime"
@@ -25,7 +68,7 @@ printf 'export const value = 1;\n' > "$REPO/src/index.ts"
 git -C "$REPO" add .
 git -C "$REPO" commit -m "init" >/dev/null
 
-python3 -m py_compile "$ROOT/src/agent_harness.py"
+"$AGENT_HARNESS_PYTHON" -m py_compile "$ROOT/src/agent_harness.py"
 chmod +x "$ROOT/bin/agent-harness"
 "$ROOT/bin/agent-harness" --version >/dev/null
 test -f "$ROOT/INSTALL.md"
@@ -48,7 +91,7 @@ grep -q "source/agent-harness" "$RUNTIME/bin/harness"
 HOOK_REPO="$TMP_DIR/hookroot-repo"
 mkdir -p "$HOOK_REPO"
 "$RUNTIME/bin/harness" start demo --prompt "hook root probe" --task-id hookroot-probe --json >/dev/null
-python3 -c "
+"$AGENT_HARNESS_PYTHON" -c "
 import json, pathlib
 p = pathlib.Path('$RUNTIME/state/active-tasks.json')
 d = json.loads(p.read_text()) if p.exists() else {}
@@ -56,7 +99,7 @@ d['$HOOK_REPO'] = {'task_id': 'hookroot-probe', 'mode': 'run', 'updated_at': '20
 p.write_text(json.dumps(d))
 "
 # No AGENT_HARNESS_ROOT in env; the hook must still find hookroot-probe (no evidence) and block.
-hook_out="$(env -u AGENT_HARNESS_ROOT python3 "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON
+hook_out="$(env -u AGENT_HARNESS_ROOT "$AGENT_HARNESS_PYTHON" "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON
 {"cwd": "$HOOK_REPO"}
 JSON
 )" || true
@@ -99,7 +142,7 @@ if [ -f "$RUNTIME/tasks/orch-rehearse/evidence.md" ]; then
   exit 1
 fi
 test -f "$RUNTIME/tasks/orch-rehearse/orchestration/dry-run/evidence-preview.md"
-python3 -c "import json,sys; m=json.load(open('$RUNTIME/tasks/orch-rehearse/task.json')); sys.exit(0 if m['status'] != 'finished' else 1)"
+"$AGENT_HARNESS_PYTHON" -c "import json,sys; m=json.load(open('$RUNTIME/tasks/orch-rehearse/task.json')); sys.exit(0 if m['status'] != 'finished' else 1)"
 # Fix loop recovers from a transient QA failure
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated fix-loop task" --task-id orch-fix --risk green --mode run --json >/dev/null
 AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 AGENT_HARNESS_ORCH_FAIL_STEPS=verify AGENT_HARNESS_ORCH_FAIL_ATTEMPTS=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-fix --dry-run --json | grep -q '"finished": true'
@@ -117,12 +160,12 @@ fi
 grep -q "NOT VERIFIED" "$RUNTIME/tasks/ah-strict/evidence.md"  # omitted results are honest, not fabricated PASS
 strict_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-strict --json || true)"
 echo "$strict_out" | grep -q '"ok": false'  # strict blocks: no recorded check
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-strict -- python3 -c "print('real'); exit(0)" | grep -q '"ok": true'
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-strict --summary "did work" --positive-result PASS --commands-run "python3 -c ..." --json >/dev/null
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-strict -- "$AGENT_HARNESS_PYTHON" -c "print('real'); exit(0)" | grep -q '"ok": true'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-strict --summary "did work" --positive-result PASS --commands-run "bound Python -c ..." --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-strict --json | grep -q '"ok": true'  # now backed by a passing check
 # A FAILING check must not satisfy strict PASS
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "liar task" --task-id ah-liar --risk red --json >/dev/null
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-liar -- python3 -c "exit(1)" >/dev/null 2>&1 || true
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" run-check --json ah-liar -- "$AGENT_HARNESS_PYTHON" -c "exit(1)" >/dev/null 2>&1 || true
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence write ah-liar --summary lies --positive-result PASS --commands-run x --json >/dev/null
 liar_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" evidence doctor ah-liar --json || true)"
 echo "$liar_out" | grep -q '"ok": false'
@@ -150,7 +193,7 @@ grep -q "retry-blocked" "$RUNTIME/tasks/ah-vfail/orchestration/ledger.jsonl"
 # Atomic writes leave no temp files behind
 if ls "$RUNTIME"/tasks/*/.task.json.tmp-* >/dev/null 2>&1; then echo "atomic write left temp files" >&2; exit 1; fi
 # Concurrency: a second conductor cannot acquire a held run lock
-python3 - "$RUNTIME" <<'PY'
+"$AGENT_HARNESS_PYTHON" - "$RUNTIME" <<'PY'
 import sys; sys.path.insert(0, "src")
 import agent_harness as a
 from pathlib import Path
@@ -166,9 +209,9 @@ PY
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "task A" --task-id failopenA --risk green --json >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "task B" --task-id failopenB --risk green --json >/dev/null
 # The real fail-open fix: BOTH tasks are tracked (task B did not evict task A).
-python3 -c "import json,sys; d=json.load(open('$RUNTIME/state/active-tasks.json')); sys.exit(0 if ('failopenA' in d and 'failopenB' in d) else 1)"
+"$AGENT_HARNESS_PYTHON" -c "import json,sys; d=json.load(open('$RUNTIME/state/active-tasks.json')); sys.exit(0 if ('failopenA' in d and 'failopenB' in d) else 1)"
 # And the stop gate still fires (blocks) with multiple active evidence-less tasks in the repo.
-fo_out="$(env AGENT_HARNESS_ROOT="$RUNTIME" python3 "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON || true
+fo_out="$(env AGENT_HARNESS_ROOT="$RUNTIME" "$AGENT_HARNESS_PYTHON" "$RUNTIME/hooks/stop-requires-evidence.py" <<JSON || true
 {"cwd": "$REPO"}
 JSON
 )"

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/check-record.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "sequence", "verifier_digest", "result", "output_digest", "prior_hash", "record_hash", "mac"],
+  "properties": {
+    "schema": {"const": "agent-harness/check-record"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "verifier_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result": {"type": "string", "minLength": 1},
+    "output_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prior_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "record_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

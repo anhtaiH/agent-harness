@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/authority-manifest.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "broker_code_identity", "broker_content_digest", "approval_public_key_digest", "anchor_backend_id", "anchor_namespace", "receipt_key_id", "terminal_pin_locator", "terminal_pin_attributes", "capability_state", "bootstrap_digest"],
+  "properties": {
+    "schema": {"const": "agent-harness/authority-manifest"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "broker_code_identity": {"type": "string", "minLength": 1},
+    "broker_content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "approval_public_key_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "anchor_backend_id": {"type": "string", "minLength": 1},
+    "anchor_namespace": {"type": "string", "minLength": 1},
+    "receipt_key_id": {"type": "string", "minLength": 1},
+    "terminal_pin_locator": {"type": "string", "minLength": 1},
+    "terminal_pin_attributes": {"type": "object"},
+    "capability_state": {"type": ["array", "object"]},
+    "bootstrap_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

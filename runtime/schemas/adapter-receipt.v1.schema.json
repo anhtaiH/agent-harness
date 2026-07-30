@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/adapter-receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "host", "applied_transaction", "targets", "before_metadata_digest", "after_metadata_digest", "plan_digest", "mac"],
+  "properties": {
+    "schema": {"const": "agent-harness/adapter-receipt"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "host": {"type": "string", "minLength": 1},
+    "applied_transaction": {"type": "string", "minLength": 1},
+    "targets": {"type": "array", "items": {"type": ["string", "object"]}},
+    "before_metadata_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "after_metadata_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
