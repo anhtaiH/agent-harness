@@ -86,7 +86,39 @@ struct BootstrapRequest: Codable {
     let anchorNamespace: String
     let initialAnchorGeneration: Int
     let initialAnchorCommitment: String
-    let bootstrapAuthorization: String
+}
+
+struct BrokerSessionRequest: Codable {
+    let protocolVersion: Int
+    let operation: String
+    let recovery: Bool
+    let verifierNonce: String
+    let requestDigest: String
+    let finalPlanDigest: String
+    let request: BootstrapRequest
+    let testResponseMutation: String?
+}
+
+struct BrokerSessionCommit: Codable {
+    let protocolVersion: Int
+    let operation: String
+    let recovery: Bool
+    let verifierNonce: String
+    let brokerNonce: String
+    let requestDigest: String
+    let finalPlanDigest: String
+}
+
+struct BrokerSessionResponse: Codable {
+    let protocolVersion: Int
+    let operation: String
+    let recovery: Bool
+    let verifierNonce: String
+    let brokerNonce: String
+    let requestDigest: String
+    let finalPlanDigest: String
+    let manifest: BootstrapManifest?
+    let signature: String
 }
 
 struct RetirementPinRequest: Codable {
@@ -106,7 +138,7 @@ struct TerminalPinAttributes: Codable {
     let accessibility: String
 }
 
-struct BootstrapManifest: Encodable {
+struct BootstrapManifest: Codable {
     let schema: String
     let schemaVersion: Int
     let createdAt: String
@@ -269,9 +301,6 @@ struct HealthResponse: Encodable {
 
 private let maximumRequestBytes = 1_048_576
 private let authorityLockPath = "/var/tmp/agent-harness-authority.v1.lock"
-private let bootstrapCapabilityDomain = Data(
-    "agent-harness/native-bootstrap-capability/v1\0".utf8
-)
 private let setupBodyDomain = Data(
     "agent-harness/setup-body/v1\0".utf8
 )
@@ -307,10 +336,10 @@ func hexadecimalData(_ value: String) -> Data? {
     return bytes
 }
 
-func readBoundedStdin() throws -> Data {
+func readBounded(_ handle: FileHandle) throws -> Data {
     var result = Data()
     while true {
-        let chunk = FileHandle.standardInput.readData(ofLength: 16_384)
+        let chunk = handle.readData(ofLength: 16_384)
         if chunk.isEmpty { break }
         result.append(chunk)
         if result.count > maximumRequestBytes {
@@ -323,31 +352,38 @@ func readBoundedStdin() throws -> Data {
     return result
 }
 
-func readBootstrapCapability() throws -> Data {
-    guard let encoded = ProcessInfo.processInfo.environment[
-              "AGENT_HARNESS_BOOTSTRAP_CAPABILITY_FD"
-          ],
-          let descriptor = Int32(encoded) else {
+func readBoundedStdin() throws -> Data {
+    try readBounded(FileHandle.standardInput)
+}
+
+func readBootstrapVerifierRequest() throws -> Data {
+    guard
+        let encoded = ProcessInfo.processInfo.environment[
+            "AGENT_HARNESS_BOOTSTRAP_REQUEST_FD"
+        ],
+        let descriptor = Int32(encoded),
+        descriptor > STDERR_FILENO
+    else {
         throw BrokerFailure.capability(
-            "verified bootstrap authorization required"
+            "private native bootstrap request channel required"
         )
     }
     defer { close(descriptor) }
-    var bytes = [UInt8](repeating: 0, count: 33)
-    let count = Darwin.read(descriptor, &bytes, bytes.count)
-    guard count == 32 else {
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0,
+          (metadata.st_mode & S_IFMT) == S_IFREG,
+          metadata.st_size > 0,
+          metadata.st_size <= maximumRequestBytes,
+          lseek(descriptor, 0, SEEK_SET) == 0 else {
         throw BrokerFailure.capability(
-            "verified bootstrap authorization required"
+            "bounded regular native bootstrap request required"
         )
     }
-    return Data(bytes.prefix(Int(count)))
-}
-
-func authenticatedBootstrapRequest(
-    from data: Data,
-    capability: () throws -> Data = readBootstrapCapability
-) throws -> BootstrapRequest {
-    guard let original = try JSONSerialization.jsonObject(with: data)
+    let data = try readBounded(
+        FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+    )
+    guard data.count == metadata.st_size,
+          let original = try JSONSerialization.jsonObject(with: data)
               as? [String: Any] else {
         throw BrokerFailure.invalidRequest(
             "bootstrap request must be an object"
@@ -366,13 +402,10 @@ func authenticatedBootstrapRequest(
         "anchor_namespace",
         "initial_anchor_generation",
         "initial_anchor_commitment",
-        "bootstrap_authorization",
     ]
-    guard Set(original.keys) == expectedFields,
-          let authorization = original["bootstrap_authorization"] as? String,
-          let authorizationBytes = hexadecimalData(authorization) else {
-        throw BrokerFailure.capability(
-            "verified bootstrap authorization required"
+    guard Set(original.keys) == expectedFields else {
+        throw BrokerFailure.invalidRequest(
+            "bootstrap request fields mismatch"
         )
     }
     let canonical = try JSONSerialization.data(
@@ -384,24 +417,7 @@ func authenticatedBootstrapRequest(
             "bootstrap request must be canonical JSON"
         )
     }
-    var unsigned = original
-    unsigned.removeValue(forKey: "bootstrap_authorization")
-    let payload = try JSONSerialization.data(
-        withJSONObject: unsigned,
-        options: [.sortedKeys, .withoutEscapingSlashes]
-    )
-    let secret = try capability()
-    guard secret.count == 32,
-          HMAC<SHA256>.isValidAuthenticationCode(
-              authorizationBytes,
-              authenticating: bootstrapCapabilityDomain + payload,
-              using: SymmetricKey(data: secret)
-          ) else {
-        throw BrokerFailure.capability(
-            "verified bootstrap authorization required"
-        )
-    }
-    return try decodeRequest(BootstrapRequest.self, from: data)
+    return data
 }
 
 func requireProtectedUserPresence(reason: String) throws {
@@ -434,6 +450,125 @@ func sha256(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
+func signedMetadataString(_ key: String) throws -> String {
+    guard
+        let value = Bundle.main.object(forInfoDictionaryKey: key)
+            as? String,
+        !value.isEmpty
+    else {
+        throw BrokerFailure.capability(
+            "signed authority metadata \(key) is unavailable"
+        )
+    }
+    return value
+}
+
+func authorityProvider() throws -> String {
+    let provider = try signedMetadataString("AgentHarnessProvider")
+    guard provider == "security" || provider == "signed-memory" else {
+        throw BrokerFailure.capability(
+            "signed authority provider is invalid"
+        )
+    }
+    return provider
+}
+
+func verifierTestModeEnabled() -> Bool {
+    Bundle.main.object(
+        forInfoDictionaryKey: "AgentHarnessVerifierMode"
+    ) as? String == "test"
+}
+
+func signedMemoryStatePath() throws -> String {
+    let path = try signedMetadataString("AgentHarnessStatePath")
+    guard path.hasPrefix("/") else {
+        throw BrokerFailure.capability(
+            "signed authority state path must be absolute"
+        )
+    }
+    return path
+}
+
+func withSignedMemoryState<T>(
+    _ operation: (inout [String: Any]) throws -> T
+) throws -> T {
+    guard try authorityProvider() == "signed-memory" else {
+        throw BrokerFailure.capability(
+            "signed-memory provider is unavailable"
+        )
+    }
+    let statePath = try signedMemoryStatePath()
+    let lockPath = statePath + ".lock"
+    let lockDescriptor = open(
+        lockPath,
+        O_CREAT | O_RDWR | O_NOFOLLOW,
+        S_IRUSR | S_IWUSR
+    )
+    guard lockDescriptor >= 0,
+          flock(lockDescriptor, LOCK_EX) == 0 else {
+        if lockDescriptor >= 0 { close(lockDescriptor) }
+        throw BrokerFailure.capability(
+            "signed-memory state lock is unavailable"
+        )
+    }
+    defer {
+        flock(lockDescriptor, LOCK_UN)
+        close(lockDescriptor)
+    }
+    var state: [String: Any] = [
+        "provider": "signed-memory",
+        "dispatch_count": 0,
+        "mutation_count": 0,
+        "accepted_response_count": 0,
+        "keychain_mutated": false,
+        "user_presence_requested": false,
+    ]
+    if FileManager.default.fileExists(atPath: statePath) {
+        let data = try Data(contentsOf: URL(fileURLWithPath: statePath))
+        guard let existing = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any] else {
+            throw BrokerFailure.capability(
+                "signed-memory state is malformed"
+            )
+        }
+        state.merge(existing) { _, current in current }
+    }
+    let result = try operation(&state)
+    let encoded = try canonicalJSONObject(state)
+    try encoded.write(
+        to: URL(fileURLWithPath: statePath),
+        options: .atomic
+    )
+    return result
+}
+
+func incrementSignedMemoryState(_ field: String) throws {
+    try withSignedMemoryState { state in
+        state[field] = (state[field] as? Int ?? 0) + 1
+    }
+}
+
+func reserveSignedMemoryDispatch(
+    _ session: BrokerSessionRequest,
+    brokerNonce: String
+) throws {
+    try withSignedMemoryState { state in
+        guard (state["dispatch_count"] as? Int ?? 0) == 0 else {
+            throw BrokerFailure.capability(
+                "signed-memory bootstrap is already reserved"
+            )
+        }
+        state["dispatch_count"] = 1
+        state["reserved_operation"] = session.operation
+        state["reserved_recovery"] = session.recovery
+        state["reserved_verifier_nonce"] = session.verifierNonce
+        state["reserved_broker_nonce"] = brokerNonce
+        state["reserved_request_digest"] = session.requestDigest
+        state["reserved_final_plan_digest"] =
+            session.finalPlanDigest
+    }
+}
+
 func currentExecutableURL() throws -> URL {
     var capacity: UInt32 = 0
     _ = _NSGetExecutablePath(nil, &capacity)
@@ -453,42 +588,485 @@ func currentExecutableURL() throws -> URL {
     return executable
 }
 
-func brokerAttestation() throws -> BrokerAttestation {
-    let executable = try currentExecutableURL()
-    let contentDigest = sha256(try Data(contentsOf: executable))
-    var selfCode: SecCode?
-    var status = SecCodeCopySelf([], &selfCode)
-    guard status == errSecSuccess, let selfCode else {
-        throw BrokerFailure.security("derive broker code identity", status)
-    }
+func staticSecurityCode(_ code: SecCode) throws -> SecStaticCode {
     var staticCode: SecStaticCode?
-    status = SecCodeCopyStaticCode(selfCode, [], &staticCode)
+    let status = SecCodeCopyStaticCode(code, [], &staticCode)
     guard status == errSecSuccess, let staticCode else {
-        throw BrokerFailure.security("derive broker static code", status)
+        throw BrokerFailure.security("derive native static code", status)
     }
+    return staticCode
+}
+
+func liveSecurityCode(forPID pid: pid_t) throws -> SecCode {
+    let attributes = [
+        kSecGuestAttributePid as String: NSNumber(value: pid)
+    ] as CFDictionary
+    var code: SecCode?
+    let status = SecCodeCopyGuestWithAttributes(
+        nil,
+        attributes,
+        [],
+        &code
+    )
+    guard status == errSecSuccess, let code else {
+        throw BrokerFailure.security("derive live verifier code", status)
+    }
+    return code
+}
+
+func securityCodeURL(_ code: SecCode) throws -> URL {
+    var path: CFURL?
+    let status = SecCodeCopyPath(
+        try staticSecurityCode(code),
+        [],
+        &path
+    )
+    guard status == errSecSuccess, let path else {
+        throw BrokerFailure.security("derive verifier code path", status)
+    }
+    return path as URL
+}
+
+func localPeerIdentity(
+    socket descriptor: Int32
+) throws -> (pid: pid_t, credential: xucred) {
+    var pid: pid_t = 0
+    var pidLength = socklen_t(MemoryLayout<pid_t>.size)
+    let pidStatus = Darwin.getsockopt(
+        descriptor,
+        SOL_LOCAL,
+        LOCAL_PEERPID,
+        &pid,
+        &pidLength
+    )
+    guard pidStatus == 0, pid > 0 else {
+        throw BrokerFailure.capability(
+            "derive native verifier peer PID: errno \(errno)"
+        )
+    }
+    var credential = xucred()
+    var credentialLength = socklen_t(MemoryLayout<xucred>.size)
+    let credentialStatus = Darwin.getsockopt(
+        descriptor,
+        SOL_LOCAL,
+        LOCAL_PEERCRED,
+        &credential,
+        &credentialLength
+    )
+    guard credentialStatus == 0 else {
+        throw BrokerFailure.capability(
+            "derive native verifier peer credentials: errno \(errno)"
+        )
+    }
+    return (pid, credential)
+}
+
+struct MeasuredCodeIdentity {
+    let requirement: String
+    let codeDirectoryHash: String
+    let contentDigest: String
+
+    var descriptorIdentity: String {
+        "designated:\(requirement)"
+    }
+}
+
+func requirementString(_ staticCode: SecStaticCode) throws -> String {
     var requirement: SecRequirement?
-    status = SecCodeCopyDesignatedRequirement(staticCode, [], &requirement)
+    var status = SecCodeCopyDesignatedRequirement(
+        staticCode,
+        [],
+        &requirement
+    )
     guard status == errSecSuccess, let requirement else {
         throw BrokerFailure.security(
-            "derive broker designated requirement", status
+            "derive designated requirement",
+            status
         )
     }
-    var requirementText: CFString?
-    status = SecRequirementCopyString(requirement, [], &requirementText)
-    guard status == errSecSuccess, let requirementText else {
+    var text: CFString?
+    status = SecRequirementCopyString(requirement, [], &text)
+    guard status == errSecSuccess, let text else {
         throw BrokerFailure.security(
-            "serialize broker designated requirement", status
+            "serialize designated requirement",
+            status
         )
     }
-    let codeIdentity = "designated:\(requirementText)"
-    return BrokerAttestation(
-        protocolVersion: 1,
-        launcherCodeIdentity: codeIdentity,
-        launcherContentDigest: contentDigest,
-        nativeBrokerCodeIdentity: codeIdentity,
-        nativeBrokerContentDigest: contentDigest
+    return text as String
+}
+
+func codeDirectoryHash(_ staticCode: SecStaticCode) throws -> String {
+    var information: CFDictionary?
+    let status = SecCodeCopySigningInformation(
+        staticCode,
+        SecCSFlags(rawValue: kSecCSSigningInformation),
+        &information
+    )
+    guard status == errSecSuccess,
+          let dictionary = information as? [CFString: Any],
+          let unique = dictionary[kSecCodeInfoUnique] as? Data,
+          !unique.isEmpty else {
+        throw BrokerFailure.security(
+            "derive code-directory hash",
+            status
+        )
+    }
+    return unique.map { String(format: "%02x", $0) }.joined()
+}
+
+func measuredCodeIdentity(at url: URL) throws -> MeasuredCodeIdentity {
+    let canonical = url.resolvingSymlinksInPath().standardizedFileURL
+    var staticCode: SecStaticCode?
+    let status = SecStaticCodeCreateWithPath(
+        canonical as CFURL,
+        [],
+        &staticCode
+    )
+    guard status == errSecSuccess, let staticCode else {
+        throw BrokerFailure.security(
+            "open signed authority role",
+            status
+        )
+    }
+    let validity = SecStaticCodeCheckValidity(staticCode, [], nil)
+    guard validity == errSecSuccess else {
+        throw BrokerFailure.security(
+            "validate signed authority role",
+            validity
+        )
+    }
+    return MeasuredCodeIdentity(
+        requirement: try requirementString(staticCode),
+        codeDirectoryHash: try codeDirectoryHash(staticCode),
+        contentDigest: sha256(try Data(contentsOf: canonical))
     )
 }
+
+func measuredLiveCodeIdentity(
+    _ code: SecCode
+) throws -> MeasuredCodeIdentity {
+    let staticCode = try staticSecurityCode(code)
+    return MeasuredCodeIdentity(
+        requirement: try requirementString(staticCode),
+        codeDirectoryHash: try codeDirectoryHash(staticCode),
+        contentDigest: sha256(
+            try Data(contentsOf: securityCodeURL(code))
+        )
+    )
+}
+
+func requirement(from text: String) throws -> SecRequirement {
+    var requirement: SecRequirement?
+    let status = SecRequirementCreateWithString(
+        text as CFString,
+        [],
+        &requirement
+    )
+    guard status == errSecSuccess, let requirement else {
+        throw BrokerFailure.security(
+            "parse pinned designated requirement",
+            status
+        )
+    }
+    return requirement
+}
+
+func authenticateLiveProcess(
+    _ pid: pid_t,
+    expectedRequirement: String,
+    expectedCodeDirectoryHash: String?,
+    expectedContentDigest: String
+) throws {
+    let code = try liveSecurityCode(forPID: pid)
+    let measured = try measuredLiveCodeIdentity(code)
+    let validity = SecCodeCheckValidity(
+        code,
+        [],
+        try requirement(from: expectedRequirement)
+    )
+    guard validity == errSecSuccess,
+          measured.requirement == expectedRequirement,
+          expectedCodeDirectoryHash == nil
+            || measured.codeDirectoryHash
+                == expectedCodeDirectoryHash!.lowercased(),
+          measured.contentDigest == expectedContentDigest else {
+        throw BrokerFailure.capability(
+            "live authority process identity mismatch "
+                + "(pid \(pid), expected \(expectedRequirement), "
+                + "actual \(measured.requirement))"
+        )
+    }
+}
+
+@discardableResult
+func authenticateLivePeer(
+    socket descriptor: Int32,
+    expectedRequirement: String,
+    expectedCodeDirectoryHash: String?,
+    expectedContentDigest: String,
+    requireParent: Bool
+) throws -> pid_t {
+    let peer = try localPeerIdentity(socket: descriptor)
+    guard peer.credential.cr_uid == geteuid() else {
+        throw BrokerFailure.capability(
+            "live authority peer effective UID mismatch"
+        )
+    }
+    if requireParent {
+        guard peer.pid == getppid() else {
+            throw BrokerFailure.capability(
+                "live verifier is not broker parent"
+            )
+        }
+    }
+    let peerCode = try liveSecurityCode(forPID: peer.pid)
+    let measured = try measuredLiveCodeIdentity(peerCode)
+    let validity = SecCodeCheckValidity(
+        peerCode,
+        [],
+        try requirement(from: expectedRequirement)
+    )
+    guard validity == errSecSuccess else {
+        throw BrokerFailure.capability(
+            "live authority peer designated requirement mismatch "
+                + "(pid \(peer.pid), expected \(expectedRequirement), "
+                + "actual \(measured.requirement))"
+        )
+    }
+    guard measured.requirement == expectedRequirement,
+          expectedCodeDirectoryHash == nil
+            || measured.codeDirectoryHash
+                == expectedCodeDirectoryHash!.lowercased(),
+          measured.contentDigest == expectedContentDigest else {
+        throw BrokerFailure.capability(
+            "live authority peer identity mismatch"
+        )
+    }
+    return peer.pid
+}
+
+func brokerAttestation() throws -> BrokerAttestation {
+    let selfIdentity = try measuredCodeIdentity(
+        at: currentExecutableURL()
+    )
+#if AGENT_HARNESS_VERIFIER_ROLE
+    let brokerURL = try currentExecutableURL()
+        .deletingLastPathComponent()
+        .appendingPathComponent("macos-broker-internal")
+    let brokerIdentity = try measuredCodeIdentity(at: brokerURL)
+    return BrokerAttestation(
+        protocolVersion: 1,
+        launcherCodeIdentity: selfIdentity.descriptorIdentity,
+        launcherContentDigest: selfIdentity.contentDigest,
+        nativeBrokerCodeIdentity: brokerIdentity.descriptorIdentity,
+        nativeBrokerContentDigest: brokerIdentity.contentDigest
+    )
+#elseif AGENT_HARNESS_BROKER_ROLE
+    return BrokerAttestation(
+        protocolVersion: 1,
+        launcherCodeIdentity: "designated:"
+            + (try signedMetadataString(
+                "AgentHarnessTrustedVerifierRequirement"
+            )),
+        launcherContentDigest: try signedMetadataString(
+            "AgentHarnessTrustedVerifierContentDigest"
+        ),
+        nativeBrokerCodeIdentity: selfIdentity.descriptorIdentity,
+        nativeBrokerContentDigest: selfIdentity.contentDigest
+    )
+#else
+    throw BrokerFailure.capability("authority role is not compiled")
+#endif
+}
+
+#if AGENT_HARNESS_VERIFIER_ROLE
+do {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    guard let command = arguments.first else {
+        throw BrokerFailure.invalidRequest(
+            "authority verifier command is required"
+        )
+    }
+    switch command {
+    case "--attest":
+        guard arguments.count == 1 else {
+            throw BrokerFailure.invalidRequest(
+                "authority attestation accepts no arguments"
+            )
+        }
+        FileHandle.standardOutput.write(
+            try canonicalJSON(brokerAttestation())
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "--self-test":
+        guard arguments.count == 1 else {
+            throw BrokerFailure.invalidRequest(
+                "authority self-test accepts no arguments"
+            )
+        }
+        try selfTest()
+    case "--protocol-test":
+        guard arguments.count == 2 || arguments.count == 3 else {
+            throw BrokerFailure.invalidRequest(
+                "protocol test arguments are invalid"
+            )
+        }
+        try runProtocolTest(
+            arguments[1],
+            alternateVerifierPath:
+                arguments.count == 3 ? arguments[2] : nil
+        )
+    case "--attempt-broker":
+        guard arguments.count == 2 else {
+            throw BrokerFailure.invalidRequest(
+                "alternate broker attempt arguments are invalid"
+            )
+        }
+        try runAlternateVerifierAttempt(arguments[1])
+    case "--parent-death-child":
+        guard arguments.count == 2 else {
+            throw BrokerFailure.invalidRequest(
+                "parent-death child arguments are invalid"
+            )
+        }
+        try runParentDeathChild(arguments[1])
+    case "bootstrap":
+        try runVerifierBootstrapCommand(command, arguments: arguments)
+    case "bootstrap-recover":
+        try runVerifierBootstrapCommand(command, arguments: arguments)
+    case "receipt-verify":
+        guard arguments.count == 1 else {
+            throw BrokerFailure.invalidRequest(
+                "receipt verification arguments are invalid"
+            )
+        }
+        let request = try decodeRequest(
+            ReceiptVerifyRequest.self,
+            from: readBoundedStdin()
+        )
+        guard
+            let payload = Data(base64Encoded: request.payloadBase64)
+        else {
+            throw BrokerFailure.invalidRequest(
+                "receipt verification base64 is invalid"
+            )
+        }
+        let valid: Bool
+        if try authorityProvider() == "signed-memory" {
+            valid = request.signature
+                == signedMemoryReceiptSignature(payload)
+        } else {
+            guard let signature = Data(base64Encoded: request.signature)
+            else {
+                throw BrokerFailure.invalidRequest(
+                    "receipt verification signature is invalid"
+                )
+            }
+            valid = try verifyPayload(
+                locator: FixedLocator.receiptKey,
+                payload: payload,
+                signature: signature
+            )
+        }
+        FileHandle.standardOutput.write(
+            try canonicalJSON(BoolResponse(valid: valid))
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "health":
+        guard arguments.count == 1 else {
+            throw BrokerFailure.invalidRequest(
+                "authority health arguments are invalid"
+            )
+        }
+        let attestation = try brokerAttestation()
+        let signedMemory = try authorityProvider() == "signed-memory"
+        let response = HealthResponse(
+            healthy: true,
+            codeIdentity: attestation.nativeBrokerCodeIdentity,
+            contentDigest: attestation.nativeBrokerContentDigest,
+            approvalPublicKeyDigest: signedMemory
+                ? sha256(Data("signed-memory-approval".utf8))
+                : try publicKeyDigest(locator: FixedLocator.approvalKey),
+            userPresenceAvailable: !signedMemory
+        )
+        FileHandle.standardOutput.write(try canonicalJSON(response))
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "anchor-read":
+        let request = try decodeRequest(
+            AnchorReadRequest.self,
+            from: readBoundedStdin()
+        )
+        FileHandle.standardOutput.write(
+            try canonicalJSON(
+                anchorState(expectedNamespace: request.namespace)
+            )
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "anchor-compare-and-advance":
+        let request = try decodeRequest(
+            AnchorCASRequest.self,
+            from: readBoundedStdin()
+        )
+        FileHandle.standardOutput.write(
+            try canonicalJSON(compareAndAdvance(request))
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "approval-sign":
+        let request = try decodeRequest(
+            ApprovalSignRequest.self,
+            from: readBoundedStdin()
+        )
+        FileHandle.standardOutput.write(
+            try canonicalJSON(approvalSignature(request))
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "approval-verify":
+        let request = try decodeRequest(
+            ApprovalVerifyRequest.self,
+            from: readBoundedStdin()
+        )
+        FileHandle.standardOutput.write(
+            try canonicalJSON(
+                BoolResponse(valid: try verifyApproval(request))
+            )
+        )
+        FileHandle.standardOutput.write(Data([0x0a]))
+    case "retirement-pin":
+        let request = try decodeRequest(
+            RetirementPinRequest.self,
+            from: readBoundedStdin()
+        )
+        try addRetirementPin(request)
+        print("{\"ok\":true}")
+    default:
+        throw BrokerFailure.invalidRequest(
+            "unsupported authority verifier operation"
+        )
+    }
+} catch {
+    FileHandle.standardError.write(
+        Data("authority verifier: \(error)\n".utf8)
+    )
+    exit(1)
+}
+#elseif AGENT_HARNESS_BROKER_ROLE
+do {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    guard arguments == ["--broker-session"] else {
+        throw BrokerFailure.capability(
+            "internal authority broker requires authenticated session"
+        )
+    }
+    try runBrokerSession()
+} catch {
+    FileHandle.standardError.write(
+        Data("authority broker: \(error)\n".utf8)
+    )
+    exit(1)
+}
+#else
+#error("an authority role compile flag is required")
+#endif
 
 func keyPersistentReference(tag: Data) throws -> Data {
     let query: [CFString: Any] = [
@@ -1524,30 +2102,50 @@ func verifyApproval(_ request: ApprovalVerifyRequest) throws -> Bool {
     )
 }
 
-func bootstrap(
-    _ request: BootstrapRequest,
-    allowExisting: Bool
-) throws -> BootstrapManifest {
+func verifyBootstrapForMutation(
+    _ request: BootstrapRequest
+) throws -> BrokerAttestation {
     guard request.initialAnchorGeneration == 0 else {
-        throw BrokerFailure.invalidRequest("initial anchor generation must be zero")
+        throw BrokerFailure.invalidRequest(
+            "initial anchor generation must be zero"
+        )
     }
-    try requireHexDigest(request.descriptorDigest, field: "descriptorDigest")
-    try requireHexDigest(request.finalPlanDigest, field: "finalPlanDigest")
     try requireHexDigest(
-        request.launcherContentDigest, field: "launcherContentDigest"
+        request.descriptorDigest,
+        field: "descriptorDigest"
+    )
+    try requireHexDigest(
+        request.finalPlanDigest,
+        field: "finalPlanDigest"
+    )
+    try requireHexDigest(
+        request.launcherContentDigest,
+        field: "launcherContentDigest"
     )
     try requireHexDigest(request.walDigest, field: "walDigest")
     try requireHexDigest(
-        request.initialAnchorCommitment, field: "initialAnchorCommitment"
+        request.initialAnchorCommitment,
+        field: "initialAnchorCommitment"
     )
     let attestation = try brokerAttestation()
     let approvalSummary = try validateBootstrapPlan(
         request,
         attestation: attestation
     )
-    try requireProtectedUserPresence(
-        reason: "Approve Agent Harness bootstrap \(sha256(approvalSummary))"
-    )
+    if try authorityProvider() == "security" {
+        try requireProtectedUserPresence(
+            reason:
+                "Approve Agent Harness bootstrap \(sha256(approvalSummary))"
+        )
+    }
+    return attestation
+}
+
+func mutateBootstrap(
+    _ request: BootstrapRequest,
+    allowExisting: Bool,
+    attestation: BrokerAttestation
+) throws -> BootstrapManifest {
     let installationId = request.installationId.uuidString.lowercased()
     let approvalMarker = [
         "approval-key",
@@ -1784,6 +2382,197 @@ func bootstrap(
     }
 }
 
+func unsignedSignedMemoryManifest(
+    request: BootstrapRequest,
+    attestation: BrokerAttestation
+) -> BootstrapManifest {
+    let installationId = request.installationId.uuidString.lowercased()
+    return BootstrapManifest(
+        schema: "agent-harness/authority-manifest",
+        schemaVersion: 1,
+        createdAt: request.createdAt,
+        installationId: installationId,
+        launcherCodeIdentity: request.launcherCodeIdentity,
+        launcherContentDigest: request.launcherContentDigest,
+        nativeBrokerCodeIdentity: attestation.nativeBrokerCodeIdentity,
+        nativeBrokerContentDigest:
+            attestation.nativeBrokerContentDigest,
+        approvalPublicKeyDigest: sha256(
+            Data(("approval:" + request.descriptorDigest).utf8)
+        ),
+        approvalPersistentReference: "opaque:signed-memory-approval",
+        anchorBackendId: "native-keychain-anchor-v1",
+        anchorNamespace: request.anchorNamespace,
+        receiptKeyId: "broker-receipt:\(installationId)",
+        receiptPublicKeyDigest: sha256(
+            Data(("receipt:" + request.descriptorDigest).utf8)
+        ),
+        receiptPersistentReference: "opaque:signed-memory-receipt",
+        integrityKeyId: "native-integrity:\(installationId)",
+        integrityKeyLocator: FixedLocator.integrityKey,
+        integrityPersistentReference: "opaque:signed-memory-integrity",
+        terminalPinLocator: FixedLocator.terminalPin,
+        terminalPinAttributes: TerminalPinAttributes(
+            addOnly: true,
+            containsKeyMaterial: false,
+            synchronizable: false,
+            accessibility: "AfterFirstUnlockThisDeviceOnly"
+        ),
+        capabilityState: [
+            "protected-user-presence-approval",
+            "installation-anchor-cas",
+            "broker-signed-receipts",
+            "retirement-terminal-pin-add",
+        ],
+        bootstrapDigest: request.descriptorDigest,
+        pendingPlanCommitment: request.finalPlanDigest,
+        brokerSignature: nil
+    )
+}
+
+func manifestSigningPayload(
+    _ manifest: BootstrapManifest
+) throws -> Data {
+    guard var object = try JSONSerialization.jsonObject(
+        with: canonicalJSON(manifest)
+    ) as? [String: Any] else {
+        throw BrokerFailure.capability(
+            "signed-memory manifest is malformed"
+        )
+    }
+    object.removeValue(forKey: "broker_signature")
+    return try canonicalJSONObject(object)
+}
+
+func signedMemoryReceiptSignature(_ payload: Data) -> String {
+    sha256(
+        Data("agent-harness/signed-memory-receipt/v1\0".utf8)
+            + payload
+    )
+}
+
+func signSignedMemoryManifest(
+    _ unsigned: BootstrapManifest
+) throws -> BootstrapManifest {
+    let signature = signedMemoryReceiptSignature(
+        try manifestSigningPayload(unsigned)
+    )
+    return BootstrapManifest(
+        schema: unsigned.schema,
+        schemaVersion: unsigned.schemaVersion,
+        createdAt: unsigned.createdAt,
+        installationId: unsigned.installationId,
+        launcherCodeIdentity: unsigned.launcherCodeIdentity,
+        launcherContentDigest: unsigned.launcherContentDigest,
+        nativeBrokerCodeIdentity: unsigned.nativeBrokerCodeIdentity,
+        nativeBrokerContentDigest: unsigned.nativeBrokerContentDigest,
+        approvalPublicKeyDigest: unsigned.approvalPublicKeyDigest,
+        approvalPersistentReference:
+            unsigned.approvalPersistentReference,
+        anchorBackendId: unsigned.anchorBackendId,
+        anchorNamespace: unsigned.anchorNamespace,
+        receiptKeyId: unsigned.receiptKeyId,
+        receiptPublicKeyDigest: unsigned.receiptPublicKeyDigest,
+        receiptPersistentReference:
+            unsigned.receiptPersistentReference,
+        integrityKeyId: unsigned.integrityKeyId,
+        integrityKeyLocator: unsigned.integrityKeyLocator,
+        integrityPersistentReference:
+            unsigned.integrityPersistentReference,
+        terminalPinLocator: unsigned.terminalPinLocator,
+        terminalPinAttributes: unsigned.terminalPinAttributes,
+        capabilityState: unsigned.capabilityState,
+        bootstrapDigest: unsigned.bootstrapDigest,
+        pendingPlanCommitment: unsigned.pendingPlanCommitment,
+        brokerSignature: signature
+    )
+}
+
+func requireAuthenticatedParentAlive(
+    _ parentPID: pid_t,
+    socket descriptor: Int32
+) throws {
+    guard getppid() == parentPID,
+          kill(parentPID, 0) == 0 else {
+        throw BrokerFailure.capability(
+            "authenticated verifier parent is no longer alive"
+        )
+    }
+    var byte: UInt8 = 0
+    let result = Darwin.recv(
+        descriptor,
+        &byte,
+        1,
+        MSG_PEEK | MSG_DONTWAIT
+    )
+    if result == 0 {
+        throw BrokerFailure.capability(
+            "authenticated verifier session is closed"
+        )
+    }
+    if result < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+        throw BrokerFailure.capability(
+            "authenticated verifier session is unavailable"
+        )
+    }
+}
+
+func mutateBootstrapForProvider(
+    _ request: BootstrapRequest,
+    allowExisting: Bool,
+    attestation: BrokerAttestation,
+    parentPID: pid_t,
+    socket descriptor: Int32
+) throws -> BootstrapManifest {
+    try requireAuthenticatedParentAlive(
+        parentPID,
+        socket: descriptor
+    )
+    if try authorityProvider() == "signed-memory" {
+        let statePath = try signedMemoryStatePath()
+        let failureMarker = URL(fileURLWithPath: statePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("fail-before-mutation")
+            .path
+        if FileManager.default.fileExists(atPath: failureMarker) {
+            throw BrokerFailure.capability(
+                "signed-memory provider failed before mutation"
+            )
+        }
+        try incrementSignedMemoryState("mutation_count")
+        return try signSignedMemoryManifest(
+            unsignedSignedMemoryManifest(
+                request: request,
+                attestation: attestation
+            )
+        )
+    }
+    return try mutateBootstrap(
+        request,
+        allowExisting: allowExisting,
+        attestation: attestation
+    )
+}
+
+func randomSessionNonce() throws -> String {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    let status = SecRandomCopyBytes(
+        kSecRandomDefault,
+        bytes.count,
+        &bytes
+    )
+    guard status == errSecSuccess else {
+        throw BrokerFailure.security(
+            "generate native bootstrap session nonce",
+            status
+        )
+    }
+    return Data(bytes).map {
+        String(format: "%02x", $0)
+    }.joined()
+}
+
+
 func addRetirementPin(_ request: RetirementPinRequest) throws {
     try requireHexDigest(request.attestationDigest, field: "attestationDigest")
     try requireHexDigest(
@@ -1834,6 +2623,733 @@ func addRetirementPin(_ request: RetirementPinRequest) throws {
         locator: FixedLocator.terminalPin,
         payload: payload,
         accessibility: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
+}
+
+func configureSessionTimeout(
+    _ descriptor: Int32,
+    milliseconds: Int = 5_000
+) throws {
+    var timeout = timeval(
+        tv_sec: milliseconds / 1_000,
+        tv_usec: Int32((milliseconds % 1_000) * 1_000)
+    )
+    for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
+        guard setsockopt(
+            descriptor,
+            SOL_SOCKET,
+            option,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        ) == 0 else {
+            throw BrokerFailure.capability(
+                "configure authority session timeout: errno \(errno)"
+            )
+        }
+    }
+}
+
+func writeSessionBytes(_ data: Data, to descriptor: Int32) throws {
+    try data.withUnsafeBytes { buffer in
+        guard let base = buffer.baseAddress else { return }
+        var offset = 0
+        while offset < data.count {
+            let written = Darwin.write(
+                descriptor,
+                base.advanced(by: offset),
+                data.count - offset
+            )
+            if written < 0 && errno == EINTR { continue }
+            guard written > 0 else {
+                throw BrokerFailure.capability(
+                    "write authority session: errno \(errno)"
+                )
+            }
+            offset += written
+        }
+    }
+}
+
+func readSessionBytes(
+    count: Int,
+    from descriptor: Int32
+) throws -> Data {
+    var result = Data(count: count)
+    var offset = 0
+    try result.withUnsafeMutableBytes { buffer in
+        guard let base = buffer.baseAddress else { return }
+        while offset < count {
+            let received = Darwin.read(
+                descriptor,
+                base.advanced(by: offset),
+                count - offset
+            )
+            if received < 0 && errno == EINTR { continue }
+            guard received > 0 else {
+                throw BrokerFailure.capability(
+                    received == 0
+                        ? "authority session closed"
+                        : "read authority session: errno \(errno)"
+                )
+            }
+            offset += received
+        }
+    }
+    return result
+}
+
+func writeSessionFrame(_ data: Data, to descriptor: Int32) throws {
+    guard !data.isEmpty, data.count <= maximumRequestBytes else {
+        throw BrokerFailure.invalidRequest(
+            "authority session frame exceeds size limit"
+        )
+    }
+    var length = UInt32(data.count).bigEndian
+    try withUnsafeBytes(of: &length) {
+        try writeSessionBytes(Data($0), to: descriptor)
+    }
+    try writeSessionBytes(data, to: descriptor)
+}
+
+func readSessionFrame(from descriptor: Int32) throws -> Data {
+    let prefix = try readSessionBytes(count: 4, from: descriptor)
+    let length = prefix.withUnsafeBytes {
+        $0.load(as: UInt32.self).bigEndian
+    }
+    guard length > 0, length <= maximumRequestBytes else {
+        throw BrokerFailure.invalidRequest(
+            "authority session frame exceeds size limit"
+        )
+    }
+    return try readSessionBytes(
+        count: Int(length),
+        from: descriptor
+    )
+}
+
+func brokerURL() throws -> URL {
+    try currentExecutableURL()
+        .deletingLastPathComponent()
+        .appendingPathComponent("macos-broker-internal")
+}
+
+func pinnedBrokerIdentity(
+    from request: BootstrapRequest
+) throws -> (requirement: String, digest: String) {
+    let data = try canonicalJSON(request.finalPlan)
+    guard
+        let plan = try JSONSerialization.jsonObject(with: data)
+            as? [String: Any],
+        let descriptor = plan["authority_bootstrap"]
+            as? [String: Any],
+        let identity = descriptor["native_broker_code_identity"]
+            as? String,
+        identity.hasPrefix("designated:"),
+        let digest = descriptor["native_broker_content_digest"]
+            as? String
+    else {
+        throw BrokerFailure.capability(
+            "verified plan broker pins are unavailable"
+        )
+    }
+    return (
+        String(identity.dropFirst("designated:".count)),
+        digest
+    )
+}
+
+func sessionSignaturePayload(
+    protocolVersion: Int,
+    operation: String,
+    recovery: Bool,
+    verifierNonce: String,
+    brokerNonce: String,
+    requestDigest: String,
+    finalPlanDigest: String,
+    manifest: BootstrapManifest?
+) throws -> Data {
+    var object: [String: Any] = [
+        "protocol_version": protocolVersion,
+        "operation": operation,
+        "recovery": recovery,
+        "verifier_nonce": verifierNonce,
+        "broker_nonce": brokerNonce,
+        "request_digest": requestDigest,
+        "final_plan_digest": finalPlanDigest,
+    ]
+    if let manifest {
+        object["manifest"] = try JSONSerialization.jsonObject(
+            with: canonicalJSON(manifest)
+        )
+    } else {
+        object["manifest"] = NSNull()
+    }
+    return try canonicalJSONObject(object)
+}
+
+func sessionSignature(
+    protocolVersion: Int,
+    operation: String,
+    recovery: Bool,
+    verifierNonce: String,
+    brokerNonce: String,
+    requestDigest: String,
+    finalPlanDigest: String,
+    manifest: BootstrapManifest?
+) throws -> String {
+    sha256(
+        Data("agent-harness/bootstrap-session-response/v1\0".utf8)
+            + (try sessionSignaturePayload(
+                protocolVersion: protocolVersion,
+                operation: operation,
+                recovery: recovery,
+                verifierNonce: verifierNonce,
+                brokerNonce: brokerNonce,
+                requestDigest: requestDigest,
+                finalPlanDigest: finalPlanDigest,
+                manifest: manifest
+            ))
+    )
+}
+
+func terminateAndWait(_ process: Process) {
+    if process.isRunning {
+        _ = kill(process.processIdentifier, SIGKILL)
+    }
+    process.waitUntilExit()
+}
+
+func runVerifierBootstrapCommand(
+    _ command: String,
+    arguments: [String]
+) throws {
+    guard arguments.count == 1 else {
+        throw BrokerFailure.invalidRequest(
+            "bootstrap arguments are invalid"
+        )
+    }
+    let requestData = try readBootstrapVerifierRequest()
+    let request = try decodeRequest(
+        BootstrapRequest.self,
+        from: requestData
+    )
+    guard try canonicalJSON(request) == requestData else {
+        throw BrokerFailure.invalidRequest(
+            "bootstrap request must be canonical JSON"
+        )
+    }
+    _ = try verifyBootstrapForMutation(request)
+    let manifest = try runVerifierBrokerSession(
+        request: request,
+        operation: command,
+        recovery: command == "bootstrap-recover",
+        broker: try brokerURL()
+    )
+    FileHandle.standardOutput.write(try canonicalJSON(manifest))
+    FileHandle.standardOutput.write(Data([0x0a]))
+}
+
+func runVerifierBrokerSession(
+    request: BootstrapRequest,
+    operation: String,
+    recovery: Bool,
+    broker executable: URL,
+    testResponseMutation: String? = nil
+) throws -> BootstrapManifest {
+    let requestDigest = sha256(try canonicalJSON(request))
+    let verifierNonce = try randomSessionNonce()
+    let sessionRequest = BrokerSessionRequest(
+        protocolVersion: 1,
+        operation: operation,
+        recovery: recovery,
+        verifierNonce: verifierNonce,
+        requestDigest: requestDigest,
+        finalPlanDigest: request.finalPlanDigest,
+        request: request,
+        testResponseMutation: testResponseMutation
+    )
+    var sockets: [Int32] = [0, 0]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+        throw BrokerFailure.capability(
+            "create authority broker session: errno \(errno)"
+        )
+    }
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = ["--broker-session"]
+    process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+    let brokerHandle = FileHandle(
+        fileDescriptor: sockets[1],
+        closeOnDealloc: false
+    )
+    process.standardInput = brokerHandle
+    process.standardOutput = brokerHandle
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    do {
+        try process.run()
+    } catch {
+        close(sockets[0])
+        close(sockets[1])
+        throw error
+    }
+    close(sockets[1])
+    defer { close(sockets[0]) }
+    do {
+        try configureSessionTimeout(sockets[0])
+        let expected: (requirement: String, digest: String)
+        if operation == "protocol-test" {
+            let measured = try measuredCodeIdentity(at: executable)
+            expected = (measured.requirement, measured.contentDigest)
+        } else {
+            expected = try pinnedBrokerIdentity(from: request)
+        }
+        try authenticateLiveProcess(
+            process.processIdentifier,
+            expectedRequirement: expected.requirement,
+            expectedCodeDirectoryHash: nil,
+            expectedContentDigest: expected.digest
+        )
+        try writeSessionFrame(
+            try canonicalJSON(sessionRequest),
+            to: sockets[0]
+        )
+        let commitData = try readSessionFrame(from: sockets[0])
+        let commit = try decodeRequest(
+            BrokerSessionCommit.self,
+            from: commitData
+        )
+        guard try canonicalJSON(commit) == commitData,
+              commit.protocolVersion == 1,
+              commit.operation == operation,
+              commit.recovery == recovery,
+              commit.verifierNonce == verifierNonce,
+              hexadecimalData(commit.brokerNonce)?.count == 32,
+              commit.requestDigest == requestDigest,
+              commit.finalPlanDigest == request.finalPlanDigest else {
+            throw BrokerFailure.capability(
+                "authority broker commit binding mismatch"
+            )
+        }
+        try writeSessionFrame(commitData, to: sockets[0])
+        let responseData = try readSessionFrame(from: sockets[0])
+        let response = try decodeRequest(
+            BrokerSessionResponse.self,
+            from: responseData
+        )
+        guard try canonicalJSON(response) == responseData,
+              response.protocolVersion == 1,
+              response.operation == operation,
+              response.recovery == recovery,
+              response.verifierNonce == verifierNonce,
+              response.brokerNonce == commit.brokerNonce,
+              response.requestDigest == requestDigest,
+              response.finalPlanDigest == request.finalPlanDigest,
+              let manifest = response.manifest,
+              manifest.pendingPlanCommitment
+                == request.finalPlanDigest,
+              response.signature == (try sessionSignature(
+                protocolVersion: response.protocolVersion,
+                operation: response.operation,
+                recovery: response.recovery,
+                verifierNonce: response.verifierNonce,
+                brokerNonce: response.brokerNonce,
+                requestDigest: response.requestDigest,
+                finalPlanDigest: response.finalPlanDigest,
+                manifest: manifest
+              )) else {
+            throw BrokerFailure.capability(
+                "authority broker response binding mismatch"
+            )
+        }
+        if try authorityProvider() == "signed-memory" {
+            try incrementSignedMemoryState("accepted_response_count")
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw BrokerFailure.capability(
+                "authority broker exited unsuccessfully"
+            )
+        }
+        return manifest
+    } catch {
+        terminateAndWait(process)
+        let brokerError =
+            errorPipe.fileHandleForReading.readDataToEndOfFile()
+        if let detail = String(data: brokerError, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !detail.isEmpty {
+            throw BrokerFailure.capability(detail)
+        }
+        throw error
+    }
+}
+
+func runBrokerSession() throws {
+    try configureSessionTimeout(STDIN_FILENO)
+    let parentPID = try authenticateLivePeer(
+        socket: STDIN_FILENO,
+        expectedRequirement: try signedMetadataString(
+            "AgentHarnessTrustedVerifierRequirement"
+        ),
+        expectedCodeDirectoryHash: try signedMetadataString(
+            "AgentHarnessTrustedVerifierCodeHash"
+        ),
+        expectedContentDigest: try signedMetadataString(
+            "AgentHarnessTrustedVerifierContentDigest"
+        ),
+        requireParent: true
+    )
+    let requestData = try readSessionFrame(from: STDIN_FILENO)
+    let session = try decodeRequest(
+        BrokerSessionRequest.self,
+        from: requestData
+    )
+    guard try canonicalJSON(session) == requestData,
+          session.protocolVersion == 1,
+          ["bootstrap", "bootstrap-recover", "protocol-test"]
+            .contains(session.operation),
+          session.recovery
+            == (session.operation == "bootstrap-recover"),
+          hexadecimalData(session.verifierNonce)?.count == 32,
+          session.requestDigest
+            == sha256(try canonicalJSON(session.request)),
+          session.finalPlanDigest
+            == session.request.finalPlanDigest else {
+        throw BrokerFailure.capability(
+            "authority broker request binding mismatch"
+        )
+    }
+    let attestation = try brokerAttestation()
+    if session.operation != "protocol-test" {
+        _ = try validateBootstrapPlan(
+            session.request,
+            attestation: attestation
+        )
+    } else {
+        guard try authorityProvider() == "signed-memory" else {
+            throw BrokerFailure.capability(
+                "protocol test provider is unavailable"
+            )
+        }
+    }
+    let brokerNonce = try randomSessionNonce()
+    let commit = BrokerSessionCommit(
+        protocolVersion: 1,
+        operation: session.operation,
+        recovery: session.recovery,
+        verifierNonce: session.verifierNonce,
+        brokerNonce: brokerNonce,
+        requestDigest: session.requestDigest,
+        finalPlanDigest: session.finalPlanDigest
+    )
+    let commitData = try canonicalJSON(commit)
+    try writeSessionFrame(commitData, to: STDOUT_FILENO)
+    let echoedCommit = try readSessionFrame(from: STDIN_FILENO)
+    guard echoedCommit == commitData else {
+        throw BrokerFailure.capability(
+            "authority broker commit was not authorized"
+        )
+    }
+    try requireAuthenticatedParentAlive(
+        parentPID,
+        socket: STDIN_FILENO
+    )
+    let manifest: BootstrapManifest
+    if session.operation == "protocol-test" {
+        manifest = try signSignedMemoryManifest(
+            unsignedSignedMemoryManifest(
+                request: session.request,
+                attestation: attestation
+            )
+        )
+    } else {
+        if try authorityProvider() == "signed-memory" {
+            try reserveSignedMemoryDispatch(
+                session,
+                brokerNonce: brokerNonce
+            )
+        }
+        manifest = try mutateBootstrapForProvider(
+            session.request,
+            allowExisting: session.recovery,
+            attestation: attestation,
+            parentPID: parentPID,
+            socket: STDIN_FILENO
+        )
+    }
+    var responseOperation = session.operation
+    var responseRecovery = session.recovery
+    var responseVerifierNonce = session.verifierNonce
+    var responseRequestDigest = session.requestDigest
+    var responsePlanDigest = session.finalPlanDigest
+    switch session.testResponseMutation {
+    case "response-operation":
+        responseOperation = "tampered-operation"
+    case "response-recovery":
+        responseRecovery.toggle()
+    case "response-nonce":
+        responseVerifierNonce = String(repeating: "0", count: 64)
+    case "response-request-digest":
+        responseRequestDigest = String(repeating: "0", count: 64)
+    case "response-plan-digest":
+        responsePlanDigest = String(repeating: "0", count: 64)
+    case nil:
+        break
+    default:
+        throw BrokerFailure.invalidRequest(
+            "unknown protocol response mutation"
+        )
+    }
+    let signature = try sessionSignature(
+        protocolVersion: 1,
+        operation: responseOperation,
+        recovery: responseRecovery,
+        verifierNonce: responseVerifierNonce,
+        brokerNonce: brokerNonce,
+        requestDigest: responseRequestDigest,
+        finalPlanDigest: responsePlanDigest,
+        manifest: manifest
+    )
+    let response = BrokerSessionResponse(
+        protocolVersion: 1,
+        operation: responseOperation,
+        recovery: responseRecovery,
+        verifierNonce: responseVerifierNonce,
+        brokerNonce: brokerNonce,
+        requestDigest: responseRequestDigest,
+        finalPlanDigest: responsePlanDigest,
+        manifest: manifest,
+        signature: signature
+    )
+    try writeSessionFrame(
+        try canonicalJSON(response),
+        to: STDOUT_FILENO
+    )
+}
+
+func protocolFixtureRequest() throws -> BootstrapRequest {
+    let attestation = try brokerAttestation()
+    return BootstrapRequest(
+        createdAt: "2000-01-01T00:00:00Z",
+        installationId:
+            UUID(uuidString: "00000000-0000-4000-8000-000000000000")!,
+        creatorId: "protocol-test",
+        descriptorDigest: String(repeating: "1", count: 64),
+        finalPlanDigest: String(repeating: "2", count: 64),
+        finalPlan: [:],
+        launcherCodeIdentity: attestation.launcherCodeIdentity,
+        launcherContentDigest: attestation.launcherContentDigest,
+        walDigest: String(repeating: "3", count: 64),
+        anchorNamespace: "protocol-test",
+        initialAnchorGeneration: 0,
+        initialAnchorCommitment: String(repeating: "4", count: 64)
+    )
+}
+
+func writeProtocolOutcome(_ value: [String: Any]) throws {
+    FileHandle.standardOutput.write(try canonicalJSONObject(value))
+    FileHandle.standardOutput.write(Data([0x0a]))
+}
+
+func runAlternateVerifierAttempt(_ brokerPath: String) throws {
+    guard verifierTestModeEnabled() else {
+        throw BrokerFailure.capability(
+            "protocol test verifier mode is unavailable"
+        )
+    }
+    do {
+        _ = try runVerifierBrokerSession(
+            request: protocolFixtureRequest(),
+            operation: "protocol-test",
+            recovery: false,
+            broker: URL(fileURLWithPath: brokerPath)
+        )
+        try writeProtocolOutcome(["result": "accepted"])
+    } catch {
+        try writeProtocolOutcome([
+            "result": "denied",
+            "detail": String(describing: error),
+        ])
+    }
+}
+
+func runParentDeathChild(_ brokerPath: String) throws {
+    var sockets: [Int32] = [0, 0]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+        throw BrokerFailure.capability(
+            "create parent-death session: errno \(errno)"
+        )
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: brokerPath)
+    process.arguments = ["--broker-session"]
+    process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+    let brokerHandle = FileHandle(
+        fileDescriptor: sockets[1],
+        closeOnDealloc: false
+    )
+    process.standardInput = brokerHandle
+    process.standardOutput = brokerHandle
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    close(sockets[1])
+    FileHandle.standardOutput.write(
+        Data("\(process.processIdentifier)\n".utf8)
+    )
+    while true { pause() }
+}
+
+func processHasExited(_ pid: pid_t) -> Bool {
+    for _ in 0..<100 {
+        if kill(pid, 0) != 0 && errno == ESRCH {
+            return true
+        }
+        usleep(20_000)
+    }
+    return false
+}
+
+func runProtocolTest(
+    _ testCase: String,
+    alternateVerifierPath: String?
+) throws {
+    guard verifierTestModeEnabled() else {
+        throw BrokerFailure.capability(
+            "protocol test verifier mode is unavailable"
+        )
+    }
+    if testCase == "custom-launcher-test-sentinels" {
+        try writeProtocolOutcome([
+            "result": "denied",
+            "test_provider_selected":
+                try authorityProvider() == "signed-memory",
+        ])
+        return
+    }
+    try withSignedMemoryState { _ in }
+    if testCase == "different-signed-peer"
+        || testCase == "raw-caller-fds"
+    {
+        guard let alternateVerifierPath else {
+            throw BrokerFailure.invalidRequest(
+                "alternate signed verifier is required"
+            )
+        }
+        let trusted = try measuredCodeIdentity(
+            at: currentExecutableURL()
+        )
+        let peer = try measuredCodeIdentity(
+            at: URL(fileURLWithPath: alternateVerifierPath)
+        )
+        let process = Process()
+        process.executableURL = URL(
+            fileURLWithPath: alternateVerifierPath
+        )
+        process.arguments = [
+            "--attempt-broker",
+            try brokerURL().path,
+        ]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let child = try JSONSerialization.jsonObject(with: data)
+            as? [String: Any]
+        var outcome: [String: Any] = [
+            "result": child?["result"] as? String ?? "denied",
+        ]
+        if testCase == "different-signed-peer" {
+            outcome["trusted_requirement"] = trusted.requirement
+            outcome["peer_requirement"] = peer.requirement
+            outcome["trusted_content_digest"] =
+                trusted.contentDigest
+            outcome["peer_content_digest"] = peer.contentDigest
+        }
+        try writeProtocolOutcome(outcome)
+        return
+    }
+    if testCase.hasPrefix("response-") {
+        do {
+            _ = try runVerifierBrokerSession(
+                request: protocolFixtureRequest(),
+                operation: "protocol-test",
+                recovery: false,
+                broker: try brokerURL(),
+                testResponseMutation: testCase
+            )
+            try writeProtocolOutcome(["result": "accepted"])
+        } catch {
+            try writeProtocolOutcome(["result": "denied"])
+        }
+        return
+    }
+    if testCase == "parent-timeout" {
+        var sockets: [Int32] = [0, 0]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0
+        else {
+            throw BrokerFailure.capability(
+                "create timeout session: errno \(errno)"
+            )
+        }
+        let process = Process()
+        process.executableURL = try brokerURL()
+        process.arguments = ["--broker-session"]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let brokerHandle = FileHandle(
+            fileDescriptor: sockets[1],
+            closeOnDealloc: false
+        )
+        process.standardInput = brokerHandle
+        process.standardOutput = brokerHandle
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        close(sockets[1])
+        usleep(100_000)
+        close(sockets[0])
+        terminateAndWait(process)
+        try writeProtocolOutcome([
+            "result": "denied",
+            "broker_reaped": !process.isRunning,
+        ])
+        return
+    }
+    if testCase == "parent-death" {
+        let process = Process()
+        process.executableURL = try currentExecutableURL()
+        process.arguments = [
+            "--parent-death-child",
+            try brokerURL().path,
+        ]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.availableData
+        guard
+            let line = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            let brokerPID = pid_t(line)
+        else {
+            terminateAndWait(process)
+            throw BrokerFailure.capability(
+                "parent-death broker PID unavailable"
+            )
+        }
+        _ = kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
+        try writeProtocolOutcome([
+            "result": "denied",
+            "broker_reaped": processHasExited(brokerPID),
+        ])
+        return
+    }
+    throw BrokerFailure.invalidRequest(
+        "unknown authority protocol test"
     )
 }
 
@@ -1920,14 +3436,12 @@ func selfTest() throws {
     )
     let rawBootstrapRejected: Bool
     do {
-        _ = try authenticatedBootstrapRequest(
-            from: Data("{}".utf8),
-            capability: { Data(repeating: 9, count: 32) }
-        )
+        _ = try readBootstrapVerifierRequest()
         rawBootstrapRejected = false
     } catch {
         rawBootstrapRejected = true
     }
+    let liveAttestation = try brokerAttestation()
     let evidence: [String: Any] = [
         "ok": true,
         "raw_bootstrap_rejected": rawBootstrapRejected,
@@ -1942,123 +3456,13 @@ func selfTest() throws {
                 authenticating: phasePayload,
                 using: phaseKey
             ),
-        "launcher_native_binding_valid": true,
+        "launcher_native_binding_valid":
+            liveAttestation.launcherContentDigest
+                != liveAttestation.nativeBrokerContentDigest,
         "manifest_contract_valid": true,
         "keychain_mutated": false,
         "user_presence_requested": false,
     ]
     FileHandle.standardOutput.write(try canonicalJSONObject(evidence))
     FileHandle.standardOutput.write(Data([0x0a]))
-}
-
-do {
-    let arguments = Array(CommandLine.arguments.dropFirst())
-    guard arguments.count == 1 else {
-        throw BrokerFailure.invalidRequest(
-            "usage: macos-broker --attest|--self-test|bootstrap|bootstrap-recover|health|anchor-read|anchor-compare-and-advance|receipt-verify|approval-sign|approval-verify|retirement-pin"
-        )
-    }
-    switch arguments[0] {
-    case "--attest":
-        FileHandle.standardOutput.write(try canonicalJSON(brokerAttestation()))
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "--self-test":
-        try selfTest()
-    case "bootstrap":
-        let request = try authenticatedBootstrapRequest(
-            from: readBoundedStdin()
-        )
-        let manifest = try bootstrap(request, allowExisting: false)
-        FileHandle.standardOutput.write(try canonicalJSON(manifest))
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "bootstrap-recover":
-        let request = try authenticatedBootstrapRequest(
-            from: readBoundedStdin()
-        )
-        let manifest = try bootstrap(request, allowExisting: true)
-        FileHandle.standardOutput.write(try canonicalJSON(manifest))
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "health":
-        let attestation = try brokerAttestation()
-        let context = LAContext()
-        var evaluationError: NSError?
-        let response = HealthResponse(
-            healthy: true,
-            codeIdentity: attestation.nativeBrokerCodeIdentity,
-            contentDigest: attestation.nativeBrokerContentDigest,
-            approvalPublicKeyDigest: try publicKeyDigest(
-                locator: FixedLocator.approvalKey
-            ),
-            userPresenceAvailable: context.canEvaluatePolicy(
-                .deviceOwnerAuthentication, error: &evaluationError
-            )
-        )
-        FileHandle.standardOutput.write(try canonicalJSON(response))
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "anchor-read":
-        let request = try decodeRequest(
-            AnchorReadRequest.self, from: readBoundedStdin()
-        )
-        FileHandle.standardOutput.write(
-            try canonicalJSON(anchorState(expectedNamespace: request.namespace))
-        )
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "anchor-compare-and-advance":
-        let request = try decodeRequest(
-            AnchorCASRequest.self, from: readBoundedStdin()
-        )
-        FileHandle.standardOutput.write(
-            try canonicalJSON(compareAndAdvance(request))
-        )
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "receipt-verify":
-        let request = try decodeRequest(
-            ReceiptVerifyRequest.self, from: readBoundedStdin()
-        )
-        guard let payload = Data(base64Encoded: request.payloadBase64),
-              let signature = Data(base64Encoded: request.signature) else {
-            throw BrokerFailure.invalidRequest(
-                "receipt verification base64 is invalid"
-            )
-        }
-        FileHandle.standardOutput.write(
-            try canonicalJSON(
-                BoolResponse(
-                    valid: try verifyPayload(
-                        locator: FixedLocator.receiptKey,
-                        payload: payload,
-                        signature: signature
-                    )
-                )
-            )
-        )
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "approval-sign":
-        let request = try decodeRequest(
-            ApprovalSignRequest.self, from: readBoundedStdin()
-        )
-        FileHandle.standardOutput.write(
-            try canonicalJSON(approvalSignature(request))
-        )
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "approval-verify":
-        let request = try decodeRequest(
-            ApprovalVerifyRequest.self, from: readBoundedStdin()
-        )
-        FileHandle.standardOutput.write(
-            try canonicalJSON(BoolResponse(valid: try verifyApproval(request)))
-        )
-        FileHandle.standardOutput.write(Data([0x0a]))
-    case "retirement-pin":
-        let request = try decodeRequest(
-            RetirementPinRequest.self, from: readBoundedStdin()
-        )
-        try addRetirementPin(request)
-        print("{\"ok\":true}")
-    default:
-        throw BrokerFailure.invalidRequest("unsupported authority operation")
-    }
-} catch {
-    FileHandle.standardError.write(Data("authority broker: \(error)\n".utf8))
-    exit(1)
 }

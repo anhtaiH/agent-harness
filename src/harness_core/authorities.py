@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Callable, Mapping
@@ -39,7 +40,7 @@ BOOTSTRAP_RECORD_LOCATOR = "agent-harness.authority.bootstrap-record.v1"
 TERMINAL_PIN_LOCATOR = "agent-harness.authority.terminal-pin.v1"
 INTEGRITY_KEY_LOCATOR = "agent-harness.signing-key.v1"
 
-_BOOTSTRAP_CAPABILITY_DOMAIN = (
+_TEST_BOOTSTRAP_CAPABILITY_DOMAIN = (
     b"agent-harness/native-bootstrap-capability/v1\0"
 )
 
@@ -115,10 +116,14 @@ class NativeAuthorityBackend:
     __slots__ = (
         "__executable",
         "__environment",
-        "__attestation",
         "__qualifying",
-        "__bootstrap_capability",
+        "__test_bootstrap_capability",
         "__trusted_plan_digest",
+        "__trusted_final_plan",
+        "__trusted_descriptor",
+        "__trusted_recovery",
+        "__bootstrap_dispatch_attempted",
+        "__bootstrap_dispatch_lock",
         "__test_backend",
         "__verified_manifest",
         "__executable_device",
@@ -137,18 +142,29 @@ class NativeAuthorityBackend:
         attestation: Mapping[str, object],
         *,
         qualifying: bool,
-        bootstrap_capability: bytes,
+        test_bootstrap_capability: bytes | None,
         trusted_plan_digest: str | None,
         test_backend: bool,
+        trusted_final_plan: bytes | None = None,
+        trusted_descriptor: bytes | None = None,
+        trusted_recovery: bool | None = None,
     ) -> None:
         if token is not _NATIVE_BACKEND_TOKEN:
             raise TypeError("NativeAuthorityBackend requires verified attestation")
         self.__executable = executable
         self.__environment = dict(environment)
-        self.__attestation = _json_copy(attestation)
         self.__qualifying = qualifying
-        self.__bootstrap_capability = bytes(bootstrap_capability)
+        self.__test_bootstrap_capability = (
+            None
+            if test_bootstrap_capability is None
+            else bytes(test_bootstrap_capability)
+        )
         self.__trusted_plan_digest = trusted_plan_digest
+        self.__trusted_final_plan = trusted_final_plan
+        self.__trusted_descriptor = trusted_descriptor
+        self.__trusted_recovery = trusted_recovery
+        self.__bootstrap_dispatch_attempted = False
+        self.__bootstrap_dispatch_lock = threading.Lock()
         self.__test_backend = test_backend
         self.__verified_manifest: bytes | None = None
         (
@@ -189,6 +205,9 @@ class NativeAuthorityBackend:
     @property
     def user_presence_available(self) -> bool:
         return bool(self.health().get("user_presence_available", True))
+
+    def _is_test_backend(self) -> bool:
+        return self.__test_backend
 
     def __read_executable_witness(self) -> tuple[int, int, str]:
         try:
@@ -269,42 +288,56 @@ class NativeAuthorityBackend:
         command: str,
         value: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        if (
+            command in {"bootstrap", "bootstrap-recover"}
+            and not self.__test_backend
+        ):
+            raise CapabilityFailure(
+                "production bootstrap dispatch is private and plan-bound"
+            )
         request_value = None if value is None else _json_copy(value)
         environment = dict(self.__environment)
         self.__verify_current_attestation(environment)
         self.__revalidate_executable()
         inherited: tuple[int, ...] = ()
         capability_fd: int | None = None
+        request_input = (
+            None
+            if request_value is None
+            else canonical_json_bytes(request_value)
+        )
         if command in {"bootstrap", "bootstrap-recover"}:
             if request_value is None:
                 raise CapabilityFailure("native bootstrap request is required")
+            if self.__test_bootstrap_capability is None:
+                raise CapabilityFailure(
+                    "test bootstrap capability is unavailable"
+                )
             unsigned = {
                 key: item
                 for key, item in request_value.items()
                 if key != "bootstrap_authorization"
             }
             request_value["bootstrap_authorization"] = hmac.new(
-                self.__bootstrap_capability,
-                _BOOTSTRAP_CAPABILITY_DOMAIN + canonical_json_bytes(unsigned),
+                self.__test_bootstrap_capability,
+                _TEST_BOOTSTRAP_CAPABILITY_DOMAIN
+                + canonical_json_bytes(unsigned),
                 hashlib.sha256,
             ).hexdigest()
             capability_fd, writer = os.pipe()
             try:
-                os.write(writer, self.__bootstrap_capability)
+                os.write(writer, self.__test_bootstrap_capability)
             finally:
                 os.close(writer)
-            environment["AGENT_HARNESS_BOOTSTRAP_CAPABILITY_FD"] = str(
-                capability_fd
-            )
+            environment[
+                "AGENT_HARNESS_TEST_BOOTSTRAP_CAPABILITY_FD"
+            ] = str(capability_fd)
             inherited = (capability_fd,)
+            request_input = canonical_json_bytes(request_value)
         try:
             result = subprocess.run(
                 [str(self.__executable), command],
-                input=(
-                    None
-                    if request_value is None
-                    else canonical_json_bytes(request_value)
-                ),
+                input=request_input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=environment,
@@ -339,13 +372,126 @@ class NativeAuthorityBackend:
             raise CapabilityFailure("native authority code identity drift")
         return response
 
-    def bootstrap(self, request: Mapping[str, object]) -> dict[str, object]:
-        return self._request("bootstrap", request)
+    def _require_bound_bootstrap_plan(
+        self,
+        plan: VerifiedAuthorityBootstrapPlan,
+    ) -> None:
+        if self.__test_backend:
+            return
+        if (
+            self.__trusted_final_plan
+            != canonical_json_bytes(plan.final_plan)
+            or self.__trusted_descriptor
+            != canonical_json_bytes(plan.descriptor.to_document())
+            or self.__trusted_recovery is not plan.recovery
+        ):
+            raise CapabilityFailure("native authority trusted plan mismatch")
 
-    def recover_bootstrap(
-        self, request: Mapping[str, object]
+    def _dispatch_bootstrap(
+        self,
+        plan: VerifiedAuthorityBootstrapPlan,
+        request: Mapping[str, object],
+        *,
+        recovery: bool,
     ) -> dict[str, object]:
-        return self._request("bootstrap-recover", request)
+        self._require_bound_bootstrap_plan(plan)
+        if self.__test_backend:
+            return self._request(
+                "bootstrap-recover" if recovery else "bootstrap",
+                request,
+            )
+        if recovery is not plan.recovery:
+            raise CapabilityFailure("native bootstrap operation mismatch")
+        request_value = _json_copy(request)
+        if (
+            canonical_json_bytes(request_value.get("final_plan"))
+            != self.__trusted_final_plan
+            or request_value.get("descriptor_digest")
+            != plan.descriptor_digest
+            or request_value.get("final_plan_digest")
+            != plan.pending_plan_commitment
+        ):
+            raise CapabilityFailure("native bootstrap request binding mismatch")
+        with self.__bootstrap_dispatch_lock:
+            if self.__bootstrap_dispatch_attempted:
+                raise CapabilityFailure(
+                    "native bootstrap dispatch already attempted"
+                )
+            self.__bootstrap_dispatch_attempted = True
+
+        request_bytes = canonical_json_bytes(request_value)
+        if len(request_bytes) > 1_048_576:
+            raise CapabilityFailure("native bootstrap request exceeds size limit")
+        environment = dict(self.__environment)
+        self.__verify_current_attestation(environment)
+        self.__revalidate_executable()
+        temporary_fd, temporary_path = tempfile.mkstemp(
+            prefix=".authority-request-"
+        )
+        request_fd: int | None = None
+        try:
+            try:
+                offset = 0
+                while offset < len(request_bytes):
+                    offset += os.write(
+                        temporary_fd,
+                        request_bytes[offset:],
+                    )
+                os.fsync(temporary_fd)
+            finally:
+                os.close(temporary_fd)
+            request_fd = os.open(
+                temporary_path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            os.unlink(temporary_path)
+            temporary_path = ""
+            metadata = os.fstat(request_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != len(request_bytes)
+            ):
+                raise CapabilityFailure(
+                    "native bootstrap request descriptor mismatch"
+                )
+            environment["AGENT_HARNESS_BOOTSTRAP_REQUEST_FD"] = str(
+                request_fd
+            )
+            result = subprocess.run(
+                [
+                    str(self.__executable),
+                    "bootstrap-recover" if recovery else "bootstrap",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                pass_fds=(request_fd,),
+                timeout=30,
+            )
+        finally:
+            if request_fd is not None:
+                os.close(request_fd)
+            if temporary_path:
+                os.unlink(temporary_path)
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            raise CapabilityFailure(
+                "native authority bootstrap failed: " + detail
+            )
+        if len(result.stdout) > 1_048_576:
+            raise CapabilityFailure("native authority response exceeds size limit")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CapabilityFailure(
+                "native authority bootstrap returned malformed JSON"
+            ) from error
+        if not isinstance(response, dict):
+            raise CapabilityFailure(
+                "native authority bootstrap response must be an object"
+            )
+        return response
 
     def add_retirement_pin(
         self, plan: VerifiedAuthorityRetirementPlan
@@ -489,6 +635,22 @@ class NativeAuthorityBackend:
         return response.get("valid") is True
 
 
+class _TestNativeAuthorityBackend(NativeAuthorityBackend):
+    __slots__ = ()
+
+    def bootstrap(
+        self,
+        request: Mapping[str, object],
+    ) -> dict[str, object]:
+        return self._request("bootstrap", request)
+
+    def recover_bootstrap(
+        self,
+        request: Mapping[str, object],
+    ) -> dict[str, object]:
+        return self._request("bootstrap-recover", request)
+
+
 def _attest_native_executable(
     executable: Path | str,
     *,
@@ -557,19 +719,21 @@ def open_test_native_authority_backend(
     environment = {
         **os.environ,
         "AGENT_HARNESS_FAKE_NATIVE_STATE": str(Path(state_path).resolve()),
-        "AGENT_HARNESS_FAKE_TRANSITION_KEY": transition_secret.hex(),
-        "AGENT_HARNESS_FAKE_USER_PRESENCE": "approved",
-    }
+            "AGENT_HARNESS_FAKE_TRANSITION_KEY": transition_secret.hex(),
+            "AGENT_HARNESS_FAKE_USER_PRESENCE": "approved",
+        }
     resolved, _, attestation = _attest_native_executable(
         executable, environment=environment
     )
-    return NativeAuthorityBackend(
+    return _TestNativeAuthorityBackend(
         _NATIVE_BACKEND_TOKEN,
         resolved,
         environment,
         attestation,
         qualifying=False,
-        bootstrap_capability=hashlib.sha256(transition_secret).digest(),
+        test_bootstrap_capability=hashlib.sha256(
+            transition_secret
+        ).digest(),
         trusted_plan_digest=None,
         test_backend=True,
     )
@@ -616,9 +780,14 @@ def open_native_authority_backend(
         environment,
         attestation,
         qualifying=False,
-        bootstrap_capability=plan._native_bootstrap_secret(),
+        test_bootstrap_capability=None,
         trusted_plan_digest=plan.descriptor_digest,
         test_backend=False,
+        trusted_final_plan=canonical_json_bytes(plan.final_plan),
+        trusted_descriptor=canonical_json_bytes(
+            plan.descriptor.to_document()
+        ),
+        trusted_recovery=plan.recovery,
     )
 
 
@@ -1014,7 +1183,6 @@ class VerifiedAuthorityBootstrapPlan:
         "__setup_body_digest",
         "__descriptor_digest",
         "__pending_plan_commitment",
-        "__native_capability",
     )
 
     def __init__(
@@ -1039,7 +1207,6 @@ class VerifiedAuthorityBootstrapPlan:
         self.__setup_body_digest = bytes.fromhex(descriptor.setup_body_digest)
         self.__descriptor_digest = bytes.fromhex(descriptor.digest)
         self.__pending_plan_commitment = bytes.fromhex(final_plan["plan_digest"])
-        self.__native_capability = secrets.token_bytes(32)
 
     @property
     def descriptor(self) -> AuthorityBootstrapDescriptor:
@@ -1072,11 +1239,6 @@ class VerifiedAuthorityBootstrapPlan:
     @property
     def pending_plan_commitment(self) -> str:
         return self.__pending_plan_commitment.hex()
-
-    def _native_bootstrap_secret(self) -> bytes:
-        if self.__consumed:
-            raise AuthorityError("authority bootstrap plan already consumed")
-        return bytes(self.__native_capability)
 
     def consume(self) -> None:
         if self.__consumed:
@@ -1482,10 +1644,11 @@ def _provision_native_locked(
         )
     request = _native_bootstrap_request(plan, wal)
     _maybe_crash(fail_at, "before_broker_dispatch")
-    if allow_existing or wal.get("phase") == "COMPLETE":
-        response = backend.recover_bootstrap(request)
-    else:
-        response = backend.bootstrap(request)
+    response = backend._dispatch_bootstrap(
+        plan,
+        request,
+        recovery=allow_existing or wal.get("phase") == "COMPLETE",
+    )
     _maybe_crash(fail_at, "after_broker_dispatch")
     _maybe_crash(fail_at, "before_manifest_readback")
     manifest, signature = _verified_native_manifest(plan, backend, response)
@@ -1616,6 +1779,14 @@ def bootstrap_authority(
 ) -> dict[str, object]:
     if not isinstance(plan, VerifiedAuthorityBootstrapPlan):
         raise TypeError("VerifiedAuthorityBootstrapPlan required")
+    if (
+        isinstance(backend, NativeAuthorityBackend)
+        and not backend._is_test_backend()
+    ):
+        raise CapabilityFailure(
+            "production native bootstrap requires "
+            "bootstrap_local_authorities"
+        )
     _require_protected_interaction(interaction)
     if fail_at is not None and fail_at not in AUTHORITY_BOOTSTRAP_CRASH_POINTS:
         raise ValueError("unknown authority crash point")
@@ -1630,6 +1801,31 @@ def bootstrap_authority(
         )
 
 
+def bootstrap_local_authorities(
+    plan: VerifiedAuthorityBootstrapPlan,
+    backend: NativeAuthorityBackend,
+) -> dict[str, object]:
+    if not isinstance(plan, VerifiedAuthorityBootstrapPlan):
+        raise TypeError("VerifiedAuthorityBootstrapPlan required")
+    if (
+        not isinstance(backend, NativeAuthorityBackend)
+        or backend._is_test_backend()
+    ):
+        raise CapabilityFailure(
+            "production native authority backend required"
+        )
+    backend._require_bound_bootstrap_plan(plan)
+    plan.consume()
+    lock = _bootstrap_lock(plan.descriptor.wal_locator)
+    with lock:
+        return _provision_locked(
+            plan,
+            backend,
+            fail_at=None,
+            allow_existing=plan.recovery,
+        )
+
+
 def recover_authority_bootstrap(
     plan: VerifiedAuthorityBootstrapPlan,
     backend,
@@ -1639,6 +1835,14 @@ def recover_authority_bootstrap(
 ) -> dict[str, object]:
     if not isinstance(plan, VerifiedAuthorityBootstrapPlan):
         raise TypeError("VerifiedAuthorityBootstrapPlan required")
+    if (
+        isinstance(backend, NativeAuthorityBackend)
+        and not backend._is_test_backend()
+    ):
+        raise CapabilityFailure(
+            "production native recovery requires "
+            "bootstrap_local_authorities"
+        )
     _require_protected_interaction(interaction)
     requested = Path(wal_path or plan.descriptor.wal_locator)
     if str(requested) != plan.descriptor.wal_locator:

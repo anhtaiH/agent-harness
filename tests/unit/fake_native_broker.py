@@ -83,7 +83,9 @@ def canonical_json(value: object) -> bytes:
 
 def require_bootstrap_authorization(request: dict[str, object]) -> None:
     authorization = request.pop("bootstrap_authorization", None)
-    descriptor = int(os.environ["AGENT_HARNESS_BOOTSTRAP_CAPABILITY_FD"])
+    descriptor = int(
+        os.environ["AGENT_HARNESS_TEST_BOOTSTRAP_CAPABILITY_FD"]
+    )
     try:
         secret = os.read(descriptor, 33)
     finally:
