@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -87,6 +88,7 @@ class MemoryAuthorityBackend:
         self.anchors: dict[str, tuple[int, str]] = {}
         self.provision_calls = 0
         self.approval_public_key_digest = "a" * 64
+        self.receipt_public_key_digest = "b" * 64
         self.user_presence_available = True
 
     def observe(self, locators: tuple[str, ...]) -> dict[str, object]:
@@ -125,9 +127,35 @@ class MemoryAuthorityBackend:
 
     def approve(
         self, envelope: bytes, summary: bytes, *, protected_user_presence: bool
-    ) -> str:
+    ) -> dict[str, str]:
         if not self.user_presence_available or not protected_user_presence:
             raise PermissionError("protected user presence required")
-        return hashlib.sha256(
+        envelope_digest = hashlib.sha256(envelope).hexdigest()
+        summary_digest = hashlib.sha256(summary).hexdigest()
+        signature = hashlib.sha256(
             b"test-approval\0" + envelope + b"\0" + summary
         ).hexdigest()
+        return {
+            "algorithm": "p256-sha256",
+            "public_key_digest": self.approval_public_key_digest,
+            "envelope_digest": envelope_digest,
+            "summary_digest": summary_digest,
+            "signature": signature,
+        }
+
+    def verify_approval(
+        self,
+        envelope: bytes,
+        summary: bytes,
+        signature: object,
+    ) -> bool:
+        if not isinstance(signature, dict):
+            return False
+        expected = self.approve(
+            envelope, summary, protected_user_presence=True
+        )
+        return set(signature) == set(expected) and all(
+            isinstance(signature.get(name), str)
+            and hmac.compare_digest(signature[name], value)
+            for name, value in expected.items()
+        )

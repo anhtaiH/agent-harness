@@ -15,11 +15,13 @@ from harness_core.auth import (
     VerifiedInstallationIndex,
     VerifiedInstallationState,
     VerifiedRollbackPlan,
+    VerifiedStateAnchorReceipt,
     create_test_integrity_authority,
     issue_rollback_plan_for_test,
     load_installation_state,
 )
 from harness_core.contracts import (
+    FINAL_INSTALL_PLAN_DOMAIN,
     SchemaError,
     canonical_json_bytes,
     new_document,
@@ -95,7 +97,9 @@ class IntegrityAuthorityTests(unittest.TestCase):
     def setUp(self):
         self.secret = b"unit-test-integrity-key"
         self.authority = create_test_integrity_authority(
-            self.secret, key_id="test-key-v1"
+            self.secret,
+            installation_id=INSTALLATION_ID,
+            key_id="test-key-v1",
         )
 
     def verify_receipt(self, value: dict[str, object]) -> VerifiedAdapterReceipt:
@@ -132,7 +136,9 @@ class IntegrityAuthorityTests(unittest.TestCase):
                 expected_anchor_commitment=ANCHOR_COMMITMENT,
             )
         other = create_test_integrity_authority(
-            b"another-integrity-key", key_id="other-key"
+            b"another-integrity-key",
+            installation_id=INSTALLATION_ID,
+            key_id="other-key",
         )
         with self.assertRaisesRegex(IntegrityError, "MAC"):
             other.verify_adapter_receipt(
@@ -161,6 +167,7 @@ class IntegrityAuthorityTests(unittest.TestCase):
             VerifiedInstallationState,
             VerifiedBootstrapPlan,
             VerifiedRollbackPlan,
+            VerifiedStateAnchorReceipt,
             VerifiedFinalizationPlan,
         ):
             with self.subTest(verified_type=verified_type.__name__):
@@ -300,14 +307,88 @@ class IntegrityAuthorityTests(unittest.TestCase):
                 ),
             ),
         )
-        for kind, method, fields in methods:
+        documents = {
+            "adapter-receipt": unsigned_receipt(),
+            "installation-index": unsigned_index(
+                signed_receipt(self.authority)
+            ),
+            "installation-publication-wal": new_document(
+                "installation-publication-wal",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                prior_generation=GENERATION - 1,
+                prior_index_digest="1" * 64,
+                new_generation=GENERATION,
+                new_index_digest="2" * 64,
+                transaction_digest="3" * 64,
+                plan_digest="4" * 64,
+                prepared_receipts=[],
+                phase="PREPARED",
+            ),
+            "authority-bootstrap-wal": new_document(
+                "authority-bootstrap-wal",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                locators={"anchor": "agent-harness.anchor.v1"},
+                broker_code_identity="native-broker-v1",
+                creator_id="creator-v1",
+                item_attributes={"anchor": {"add_only": True}},
+                conditional_inverses=[],
+                phase="PREPARED",
+                broker_signature=None,
+            ),
+            "signing-key-bootstrap-wal": new_document(
+                "signing-key-bootstrap-wal",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                keychain_locator="agent-harness.signing-key.v1",
+                operation_id="signing-key-bootstrap-v1",
+                creator_id="creator-v1",
+                item_attributes={"non_exportable": True},
+                conditional_inverse={"operation": "remove-exact-add-result"},
+                phase="PREPARED",
+            ),
+            "state-anchor-receipt": new_document(
+                "state-anchor-receipt",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                anchor_namespace="agent-harness.anchor.v1",
+                anchor_backend_id="native-keychain-anchor-v1",
+                receipt_key_id="broker-receipt:v1",
+                transition_domain="installation-transaction",
+                transition_digest="5" * 64,
+                old_generation=GENERATION - 1,
+                old_commitment="6" * 64,
+                new_generation=GENERATION,
+                new_commitment=ANCHOR_COMMITMENT,
+                operation_id="anchor-cas-v1",
+                broker_receipt="signed-receipt-v1",
+            ),
+            "check-record": new_document(
+                "check-record",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                sequence=1,
+                verifier_digest="7" * 64,
+                result="PASS",
+                output_digest="8" * 64,
+                prior_hash="9" * 64,
+                record_hash="a" * 64,
+            ),
+            "check-tail": new_document(
+                "check-tail",
+                INSTALLATION_ID,
+                created_at=CREATED_AT,
+                task_id="task-v1",
+                task_version=1,
+                expected_sequence=1,
+                expected_record_hash="b" * 64,
+                checkpoint_generation=GENERATION,
+            ),
+        }
+        for kind, method, _ in methods:
             with self.subTest(kind=kind):
-                value = new_document(
-                    kind,
-                    INSTALLATION_ID,
-                    created_at=CREATED_AT,
-                    **{field: "same" for field in fields},
-                )
+                value = documents[kind]
                 domain = f"agent-harness/mac/{kind}/v1\0".encode()
                 expected = hmac.new(
                     self.secret,
@@ -325,6 +406,20 @@ class IntegrityAuthorityTests(unittest.TestCase):
             "secret",
         ):
             self.assertFalse(hasattr(self.authority, forbidden), forbidden)
+
+    def test_mac_issuance_is_installation_bound_and_semantically_validated(self):
+        authority = create_test_integrity_authority(
+            self.secret,
+            key_id="installation-bound-key",
+            installation_id=INSTALLATION_ID,
+        )
+        foreign = unsigned_receipt(installation_id=OTHER_INSTALLATION_ID)
+        with self.assertRaisesRegex(IntegrityError, "installation"):
+            authority.mac_adapter_receipt(foreign)
+
+        semantically_invalid = unsigned_receipt(generation="4")
+        with self.assertRaisesRegex(IntegrityError, "generation"):
+            authority.mac_adapter_receipt(semantically_invalid)
 
     def test_narrow_mac_issuers_reject_arbitrary_payloads(self):
         methods = (
@@ -372,7 +467,7 @@ class IntegrityAuthorityTests(unittest.TestCase):
             operations=[],
         )
         raw["plan_digest"] = canonical_digest(
-            b"agent-harness/install-plan/v1\0", raw
+            FINAL_INSTALL_PLAN_DOMAIN, raw
         )
         verified = self.authority.verify_install_plan(
             raw,

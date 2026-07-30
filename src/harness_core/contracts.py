@@ -9,6 +9,7 @@ SCHEMA_VERSION = 1
 BASE_FIELDS = frozenset(
     {"schema", "schema_version", "created_at", "installation_id"}
 )
+FINAL_INSTALL_PLAN_DOMAIN = b"agent-harness/final-install-plan/v1\0"
 _RFC3339_UTC = re.compile(
     r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\Z"
 )
@@ -31,9 +32,16 @@ def require_rfc3339_utc(value: object) -> str:
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+    except ValueError as error:
+        raise SchemaError("canonical JSON contains a non-finite JSON number") from error
 
 
 def new_document(

@@ -106,6 +106,38 @@ chmod +x "$CHANGING" "$CHANGING.replacement"
 expect_rejected changed "AGENT_HARNESS_PYTHON changed after validation" \
   AGENT_HARNESS_PYTHON="$CHANGING"
 
+LATE_CHANGING="$TMP_DIR/late-changing-python"
+cp "$REQUIRED_PYTHON" "$LATE_CHANGING"
+printf '#!/usr/bin/env bash\nexit 93\n' >"$LATE_CHANGING.replacement"
+chmod +x "$LATE_CHANGING" "$LATE_CHANGING.replacement"
+LATE_ROOT="$TMP_DIR/late-changing"
+make_root "$LATE_ROOT"
+"$REQUIRED_PYTHON" - "$LATE_ROOT/tests/run.sh" \
+  "$LATE_CHANGING" <<'PY'
+from pathlib import Path
+import sys
+
+runner = Path(sys.argv[1])
+interpreter = sys.argv[2]
+source = runner.read_text()
+marker = "readonly AGENT_HARNESS_PYTHON\n"
+replacement = (
+    marker
+    + f'/bin/mv "{interpreter}.replacement" "{interpreter}"\n'
+    + f'/bin/chmod +x "{interpreter}"\n'
+)
+if source.count(marker) != 1:
+    raise SystemExit("runner validation marker is missing or ambiguous")
+runner.write_text(source.replace(marker, replacement))
+PY
+run_case "$LATE_ROOT" AGENT_HARNESS_PYTHON="$LATE_CHANGING"
+if [ "$CASE_STATUS" -eq 0 ] ||
+   ! grep -Fq "AGENT_HARNESS_PYTHON changed after validation" "$OUT"; then
+  echo "late-changing: expected rejection before unit subprocess" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
 CANONICAL_ROOT="$TMP_DIR/canonical"
 make_root "$CANONICAL_ROOT"
 run_case "$CANONICAL_ROOT" AGENT_HARNESS_PYTHON="$REQUIRED_PYTHON"

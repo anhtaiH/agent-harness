@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import hashlib
 import os
@@ -93,9 +94,10 @@ class SourceEntryV1:
         if self.kind == "blob":
             value["blob_sha256"] = self.payload.hex()
         elif self.kind == "symlink":
-            value["symlink_target"] = self.payload.decode(
-                "utf-8", "surrogateescape"
-            )
+            value["symlink_target_encoding"] = "base64"
+            value["symlink_target_base64"] = base64.b64encode(
+                self.payload
+            ).decode("ascii")
         else:
             value["submodule_identity"] = (
                 self.submodule_identity.to_document()
@@ -127,6 +129,7 @@ class SourceContentIdentityV1:
             "source_commit": self.source_commit,
             "frozen_snapshot_digest": self.frozen_snapshot_digest,
             "digest": self.digest,
+            "entries": [entry.to_document() for entry in self.entries],
         }
 
 

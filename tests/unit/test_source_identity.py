@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import time
 import unicodedata
 import unittest
 
+from harness_core.authorities import SetupBodyV1
+from harness_core.contracts import canonical_json_bytes
 from harness_core.source_identity import (
     SourceIdentityError,
     compute_source_content_identity,
@@ -120,6 +123,41 @@ class SourceIdentityTests(unittest.TestCase):
         commit_all(repo, "content")
         content = compute_source_content_identity(repo).digest
         self.assertNotEqual(content, symlink)
+
+    def test_non_utf8_symlink_target_round_trips_document_plan_and_snapshot(self):
+        repo = init_repo(self.root / "repo")
+        raw_target = b"target-\xff"
+        os.symlink(raw_target, os.fsencode(repo / "raw-link"))
+        git(repo, "add", "raw-link")
+        git(repo, "commit", "-qm", "add raw symlink")
+
+        identity = compute_source_content_identity(repo)
+        document = identity.to_document()
+        symlink = next(
+            entry
+            for entry in document["entries"]
+            if entry["kind"] == "symlink"
+        )
+        self.assertEqual(symlink["symlink_target_encoding"], "base64")
+        self.assertEqual(
+            base64.b64decode(symlink["symlink_target_base64"], validate=True),
+            raw_target,
+        )
+        body = SetupBodyV1(
+            installation_id="12345678-1234-5678-9234-567812345678",
+            runtime_root="/var/lib/agent-harness/runtime",
+            rollback_root="/var/lib/agent-harness/rollback",
+            source_identity=identity,
+            adapter_plan_digests=(),
+            operations=(),
+        )
+        canonical_json_bytes(body.to_document())
+
+        destination = self.root / "snapshot"
+        materialize_source_snapshot(repo, destination, identity)
+        self.assertEqual(
+            os.readlink(os.fsencode(destination / "raw-link")), raw_target
+        )
 
     def test_algorithm_or_inclusion_policy_change_alters_identity(self):
         repo = init_repo(self.root / "repo")

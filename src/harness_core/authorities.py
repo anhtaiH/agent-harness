@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import base64
 import copy
 from dataclasses import dataclass, field
+from datetime import datetime
 import hashlib
 import hmac
 import json
 import os
 from pathlib import Path
+import secrets
+import stat
+import subprocess
 import threading
 import time
-from typing import Mapping
+from typing import Callable, Mapping
 import uuid
 
-from .auth import IntegrityAuthority
+from .auth import IntegrityAuthority, VerifiedInstallationState
 from .contracts import (
+    FINAL_INSTALL_PLAN_DOMAIN,
     canonical_json_bytes,
     new_document,
     require_document,
@@ -48,11 +54,12 @@ AUTHORITY_BOOTSTRAP_CRASH_POINTS = (
 
 _SETUP_DOMAIN = b"agent-harness/setup-body/v1\0"
 _BOOTSTRAP_DOMAIN = b"agent-harness/authority-bootstrap-descriptor/v1\0"
-_FINAL_PLAN_DOMAIN = b"agent-harness/final-install-plan/v1\0"
 _BOOTSTRAP_WAL_DOMAIN = b"agent-harness/authority-bootstrap-wal/v1\0"
 _BOOTSTRAP_TOKEN = object()
 _TRANSITION_TOKEN = object()
+_RETIREMENT_TOKEN = object()
 _INTERACTION_TOKEN = object()
+_TEST_AUTHORITY_TOKEN = object()
 _LOCK_GUARD = threading.Lock()
 _BOOTSTRAP_LOCKS: dict[str, threading.Lock] = {}
 _ANCHOR_LOCKS: dict[tuple[int, str], threading.Lock] = {}
@@ -70,6 +77,349 @@ class InjectedAuthorityCrash(RuntimeError):
     pass
 
 
+class VerifiedAuthorityRetirementPlan:
+    __slots__ = ("__document", "__consumed")
+
+    def __init__(self, token: object, document: Mapping[str, object]) -> None:
+        if token is not _RETIREMENT_TOKEN:
+            raise TypeError(
+                "VerifiedAuthorityRetirementPlan cannot be constructed directly"
+            )
+        self.__document = canonical_json_bytes(document)
+        self.__consumed = False
+
+    def consume(self) -> dict[str, object]:
+        if self.__consumed:
+            raise AuthorityError("authority retirement plan already consumed")
+        self.__consumed = True
+        return json.loads(self.__document)
+
+    def __reduce__(self):
+        raise TypeError("VerifiedAuthorityRetirementPlan is non-serializable")
+
+
+_NATIVE_BACKEND_TOKEN = object()
+
+
+class NativeAuthorityBackend:
+    __slots__ = (
+        "__executable",
+        "__environment",
+        "__attestation",
+        "__qualifying",
+    )
+
+    def __init__(
+        self,
+        token: object,
+        executable: Path,
+        environment: Mapping[str, str],
+        attestation: Mapping[str, object],
+        *,
+        qualifying: bool,
+    ) -> None:
+        if token is not _NATIVE_BACKEND_TOKEN:
+            raise TypeError("NativeAuthorityBackend requires verified attestation")
+        self.__executable = executable
+        self.__environment = dict(environment)
+        self.__attestation = _json_copy(attestation)
+        self.__qualifying = qualifying
+
+    @property
+    def qualifying(self) -> bool:
+        return self.__qualifying
+
+    @property
+    def code_identity(self) -> str:
+        return self.__attestation["code_identity"]
+
+    @property
+    def approval_public_key_digest(self) -> str:
+        value = self.health().get("approval_public_key_digest")
+        if not isinstance(value, str):
+            raise CapabilityFailure("native approval public key is unavailable")
+        return value
+
+    @property
+    def user_presence_available(self) -> bool:
+        return bool(self.health().get("user_presence_available", True))
+
+    def _request(
+        self,
+        command: str,
+        value: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        result = subprocess.run(
+            [str(self.__executable), command],
+            input=None if value is None else canonical_json_bytes(value),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, **self.__environment},
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            raise CapabilityFailure(
+                f"native authority {command} failed: {detail}"
+            )
+        if len(result.stdout) > 1_048_576:
+            raise CapabilityFailure("native authority response exceeds size limit")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CapabilityFailure(
+                f"native authority {command} returned malformed JSON"
+            ) from error
+        if not isinstance(response, dict):
+            raise CapabilityFailure(
+                f"native authority {command} response must be an object"
+            )
+        return response
+
+    def health(self) -> dict[str, object]:
+        response = self._request("health")
+        if response.get("code_identity") != self.code_identity:
+            raise CapabilityFailure("native authority code identity drift")
+        return response
+
+    def bootstrap(self, request: Mapping[str, object]) -> dict[str, object]:
+        return self._request("bootstrap", request)
+
+    def recover_bootstrap(
+        self, request: Mapping[str, object]
+    ) -> dict[str, object]:
+        return self._request("bootstrap-recover", request)
+
+    def add_retirement_pin(
+        self, plan: VerifiedAuthorityRetirementPlan
+    ) -> None:
+        if not isinstance(plan, VerifiedAuthorityRetirementPlan):
+            raise TypeError("VerifiedAuthorityRetirementPlan required")
+        response = self._request("retirement-pin", plan.consume())
+        if response.get("ok") is not True:
+            raise CapabilityFailure("native retirement pin readback failed")
+
+    def verify_bootstrap_manifest(self, manifest: object) -> bool:
+        if not isinstance(manifest, Mapping):
+            return False
+        signature = manifest.get("broker_signature")
+        if not isinstance(signature, str):
+            return False
+        unsigned = {
+            key: item
+            for key, item in manifest.items()
+            if key != "broker_signature"
+        }
+        try:
+            response = self._request(
+                "receipt-verify",
+                {
+                    "payload_base64": base64.b64encode(
+                        canonical_json_bytes(unsigned)
+                    ).decode(),
+                    "signature": signature,
+                },
+            )
+        except CapabilityFailure:
+            return False
+        return response.get("valid") is True
+
+    def anchor_read(self, namespace: str) -> tuple[int, str]:
+        response = self._request("anchor-read", {"namespace": namespace})
+        if response.get("namespace") != namespace:
+            raise CapabilityFailure("native anchor namespace mismatch")
+        generation = response.get("generation")
+        commitment = response.get("commitment")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or not isinstance(commitment, str)
+        ):
+            raise CapabilityFailure("native anchor response is malformed")
+        return generation, commitment
+
+    def compare_and_advance(
+        self, transition: VerifiedAnchorTransition
+    ) -> dict[str, object]:
+        if not isinstance(transition, VerifiedAnchorTransition):
+            raise TypeError("VerifiedAnchorTransition required")
+        document = transition.consume()
+        request = _json_copy(document)
+        request["transition_domain"] = request.get(
+            "domain", "installation-transaction"
+        )
+        request["transition_digest"] = _domain_digest(
+            b"agent-harness/verified-anchor-transition/v1\0",
+            {
+                key: item
+                for key, item in document.items()
+                if key != "authorization_mac"
+            },
+        )
+        return self._request("anchor-compare-and-advance", request)
+
+    def verify_receipt(self, receipt: object) -> bool:
+        if not isinstance(receipt, Mapping):
+            return False
+        signature = receipt.get("broker_receipt")
+        if not isinstance(signature, str):
+            return False
+        unsigned = {
+            key: item for key, item in receipt.items() if key != "broker_receipt"
+        }
+        try:
+            response = self._request(
+                "receipt-verify",
+                {
+                    "payload_base64": base64.b64encode(
+                        canonical_json_bytes(unsigned)
+                    ).decode(),
+                    "signature": signature,
+                },
+            )
+        except CapabilityFailure:
+            return False
+        return response.get("valid") is True
+
+    def approve(
+        self,
+        envelope: bytes,
+        summary: bytes,
+        *,
+        protected_user_presence: bool,
+    ) -> dict[str, object]:
+        if not protected_user_presence:
+            raise CapabilityFailure("protected user presence is required")
+        return self._request(
+            "approval-sign",
+            {
+                "envelope_base64": base64.b64encode(envelope).decode(),
+                "summary": summary.decode(),
+            },
+        )
+
+    def verify_approval(
+        self,
+        envelope: bytes,
+        summary: bytes,
+        signature: object,
+    ) -> bool:
+        if not isinstance(signature, Mapping):
+            return False
+        try:
+            response = self._request(
+                "approval-verify",
+                {
+                    "envelope_base64": base64.b64encode(envelope).decode(),
+                    "summary": summary.decode(),
+                    "approval": signature,
+                },
+            )
+        except CapabilityFailure:
+            return False
+        return response.get("valid") is True
+
+
+def _attest_native_executable(
+    executable: Path | str,
+    *,
+    environment: Mapping[str, str],
+) -> tuple[Path, str, dict[str, object]]:
+    requested = Path(executable)
+    if not requested.is_absolute():
+        raise CapabilityFailure("native authority path must be absolute")
+    resolved = requested.resolve(strict=True)
+    if resolved != requested or requested.is_symlink():
+        raise CapabilityFailure("native authority path must be canonical")
+    descriptor = os.open(
+        resolved,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
+            raise CapabilityFailure(
+                "native authority must be a regular executable"
+            )
+        with os.fdopen(os.dup(descriptor), "rb") as source:
+            content_digest = hashlib.sha256(source.read()).hexdigest()
+    finally:
+        os.close(descriptor)
+    probe = subprocess.run(
+        [str(resolved), "--attest"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, **environment},
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        raise CapabilityFailure(
+            "native authority attestation failed: "
+            + probe.stderr.decode("utf-8", "replace").strip()
+        )
+    try:
+        attestation = json.loads(probe.stdout)
+    except json.JSONDecodeError as error:
+        raise CapabilityFailure("native authority attestation is malformed") from error
+    if (
+        not isinstance(attestation, dict)
+        or attestation.get("protocol_version") != 1
+        or attestation.get("content_digest") != content_digest
+        or not isinstance(attestation.get("code_identity"), str)
+    ):
+        raise CapabilityFailure("native authority attestation mismatch")
+    if hashlib.sha256(resolved.read_bytes()).hexdigest() != content_digest:
+        raise CapabilityFailure("native authority changed after attestation")
+    return resolved, content_digest, attestation
+
+
+def open_test_native_authority_backend(
+    executable: Path | str,
+    *,
+    state_path: Path | str,
+    transition_secret: bytes = b"fake-native-transition-key",
+) -> NativeAuthorityBackend:
+    if not isinstance(transition_secret, bytes) or not transition_secret:
+        raise ValueError("test transition secret must be non-empty bytes")
+    environment = {
+        "AGENT_HARNESS_FAKE_NATIVE_STATE": str(Path(state_path).resolve()),
+        "AGENT_HARNESS_FAKE_TRANSITION_KEY": transition_secret.hex(),
+    }
+    resolved, _, attestation = _attest_native_executable(
+        executable, environment=environment
+    )
+    return NativeAuthorityBackend(
+        _NATIVE_BACKEND_TOKEN,
+        resolved,
+        environment,
+        attestation,
+        qualifying=False,
+    )
+
+
+def open_native_authority_backend(
+    executable: Path | str,
+    *,
+    expected_content_digest: str,
+    expected_code_identity: str,
+) -> NativeAuthorityBackend:
+    resolved, content_digest, attestation = _attest_native_executable(
+        executable, environment={}
+    )
+    if (
+        not hmac.compare_digest(content_digest, expected_content_digest)
+        or attestation["code_identity"] != expected_code_identity
+    ):
+        raise CapabilityFailure("native authority pinned identity mismatch")
+    return NativeAuthorityBackend(
+        _NATIVE_BACKEND_TOKEN,
+        resolved,
+        {},
+        attestation,
+        qualifying=True,
+    )
+
+
 def _domain_digest(domain: bytes, value: object) -> str:
     return hashlib.sha256(domain + canonical_json_bytes(value)).hexdigest()
 
@@ -85,11 +435,15 @@ def _source_document(value: object) -> dict[str, object]:
         raise AuthorityError("source identity must be a mapping")
     document = _json_copy(value)
     required = {
+        "algorithm",
         "algorithm_version",
+        "inclusion_policy",
         "policy_version",
         "ordered_manifest_digest",
         "source_commit",
         "frozen_snapshot_digest",
+        "digest",
+        "entries",
     }
     if not required <= set(document):
         raise AuthorityError("source identity is incomplete")
@@ -418,7 +772,7 @@ def build_final_install_plan(
 
 def final_install_plan_digest(value: Mapping[str, object]) -> str:
     unsigned = {key: item for key, item in value.items() if key != "plan_digest"}
-    return _domain_digest(_FINAL_PLAN_DOMAIN, unsigned)
+    return _domain_digest(FINAL_INSTALL_PLAN_DOMAIN, unsigned)
 
 
 class VerifiedAuthorityBootstrapPlan:
@@ -428,10 +782,10 @@ class VerifiedAuthorityBootstrapPlan:
         "__observations",
         "__consumed",
         "__recovery",
-        "installation_id",
-        "setup_body_digest",
-        "descriptor_digest",
-        "pending_plan_commitment",
+        "__installation_id",
+        "__setup_body_digest",
+        "__descriptor_digest",
+        "__pending_plan_commitment",
     )
 
     def __init__(
@@ -447,35 +801,68 @@ class VerifiedAuthorityBootstrapPlan:
             raise TypeError(
                 "VerifiedAuthorityBootstrapPlan cannot be constructed directly"
             )
-        self.__final_plan = _json_copy(final_plan)
-        self.__descriptor = descriptor
-        self.__observations = _json_copy(observations)
+        self.__final_plan = canonical_json_bytes(final_plan)
+        self.__descriptor = canonical_json_bytes(descriptor.to_document())
+        self.__observations = canonical_json_bytes(observations)
         self.__consumed = False
         self.__recovery = recovery
-        self.installation_id = descriptor.installation_id
-        self.setup_body_digest = descriptor.setup_body_digest
-        self.descriptor_digest = descriptor.digest
-        self.pending_plan_commitment = final_plan["plan_digest"]
+        self.__installation_id = descriptor.installation_id
+        self.__setup_body_digest = bytes.fromhex(descriptor.setup_body_digest)
+        self.__descriptor_digest = bytes.fromhex(descriptor.digest)
+        self.__pending_plan_commitment = bytes.fromhex(final_plan["plan_digest"])
 
     @property
     def descriptor(self) -> AuthorityBootstrapDescriptor:
-        return self.__descriptor
+        return AuthorityBootstrapDescriptor.from_document(json.loads(self.__descriptor))
 
     @property
     def final_plan(self) -> dict[str, object]:
-        return copy.deepcopy(self.__final_plan)
+        return json.loads(self.__final_plan)
 
     @property
     def observations(self) -> dict[str, object]:
-        return copy.deepcopy(self.__observations)
+        return json.loads(self.__observations)
 
     @property
     def recovery(self) -> bool:
         return self.__recovery
 
+    @property
+    def installation_id(self) -> str:
+        return self.__installation_id
+
+    @property
+    def setup_body_digest(self) -> str:
+        return self.__setup_body_digest.hex()
+
+    @property
+    def descriptor_digest(self) -> str:
+        return self.__descriptor_digest.hex()
+
+    @property
+    def pending_plan_commitment(self) -> str:
+        return self.__pending_plan_commitment.hex()
+
     def consume(self) -> None:
         if self.__consumed:
             raise AuthorityError("authority bootstrap plan already consumed")
+        descriptor = self.descriptor
+        final_plan = self.final_plan
+        if (
+            descriptor.installation_id != self.__installation_id
+            or not hmac.compare_digest(
+                bytes.fromhex(descriptor.setup_body_digest),
+                self.__setup_body_digest,
+            )
+            or not hmac.compare_digest(
+                bytes.fromhex(descriptor.digest), self.__descriptor_digest
+            )
+            or not hmac.compare_digest(
+                bytes.fromhex(final_install_plan_digest(final_plan)),
+                self.__pending_plan_commitment,
+            )
+        ):
+            raise AuthorityError("authority bootstrap capability snapshot mismatch")
         self.__consumed = True
 
     def __reduce__(self):
@@ -719,9 +1106,12 @@ def _manifest(
         "broker_code_identity": descriptor.broker_code_identity,
         "broker_content_digest": descriptor.broker_content_digest,
         "approval_public_key_digest": backend.approval_public_key_digest,
+        "approval_persistent_reference": "opaque:approval-key",
         "anchor_backend_id": "native-keychain-anchor-v1",
         "anchor_namespace": descriptor.initial_anchor_namespace,
         "receipt_key_id": f"broker-receipt:{descriptor.installation_id}",
+        "receipt_public_key_digest": backend.receipt_public_key_digest,
+        "receipt_persistent_reference": "opaque:broker-receipt-key",
         "terminal_pin_locator": descriptor.locator_map["terminal_pin"],
         "terminal_pin_attributes": descriptor.item_attributes["terminal_pin"],
         "capability_state": list(descriptor.capabilities),
@@ -733,6 +1123,122 @@ def _manifest(
 def _bootstrap_lock(path: str) -> threading.Lock:
     with _LOCK_GUARD:
         return _BOOTSTRAP_LOCKS.setdefault(path, threading.Lock())
+
+
+def _native_bootstrap_request(
+    plan: VerifiedAuthorityBootstrapPlan,
+    wal: Mapping[str, object],
+) -> dict[str, object]:
+    descriptor = plan.descriptor
+    return {
+        "created_at": plan.final_plan["created_at"],
+        "installation_id": descriptor.installation_id,
+        "creator_id": descriptor.creator_id,
+        "descriptor_digest": descriptor.digest,
+        "final_plan_digest": plan.pending_plan_commitment,
+        "wal_digest": wal["wal_digest"],
+        "anchor_namespace": descriptor.initial_anchor_namespace,
+        "initial_anchor_generation": descriptor.initial_anchor_generation,
+        "initial_anchor_commitment": descriptor.initial_anchor_commitment,
+    }
+
+
+def _verified_native_manifest(
+    plan: VerifiedAuthorityBootstrapPlan,
+    backend: NativeAuthorityBackend,
+    manifest: object,
+) -> tuple[dict[str, object], str]:
+    if not isinstance(manifest, Mapping):
+        raise CapabilityFailure("native authority manifest must be an object")
+    descriptor = plan.descriptor
+    expected = {
+        "schema": "agent-harness/authority-manifest",
+        "schema_version": 1,
+        "created_at": plan.final_plan["created_at"],
+        "installation_id": descriptor.installation_id,
+        "broker_code_identity": descriptor.broker_code_identity,
+        "broker_content_digest": descriptor.broker_content_digest,
+        "anchor_namespace": descriptor.initial_anchor_namespace,
+        "terminal_pin_locator": descriptor.locator_map["terminal_pin"],
+        "terminal_pin_attributes": descriptor.item_attributes["terminal_pin"],
+        "capability_state": list(descriptor.capabilities),
+        "bootstrap_digest": descriptor.digest,
+        "pending_plan_commitment": plan.pending_plan_commitment,
+    }
+    if any(manifest.get(name) != value for name, value in expected.items()):
+        raise CapabilityFailure("native authority manifest binding mismatch")
+    for field in (
+        "approval_public_key_digest",
+        "approval_persistent_reference",
+        "anchor_backend_id",
+        "receipt_key_id",
+        "receipt_public_key_digest",
+        "receipt_persistent_reference",
+    ):
+        value = manifest.get(field)
+        if not isinstance(value, str) or not value:
+            raise CapabilityFailure(
+                f"native authority manifest {field} is invalid"
+            )
+    for field in ("approval_public_key_digest", "receipt_public_key_digest"):
+        digest = manifest[field]
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise CapabilityFailure(
+                f"native authority manifest {field} is invalid"
+            )
+    signature = manifest.get("broker_signature")
+    if not isinstance(signature, str) or not backend.verify_bootstrap_manifest(
+        manifest
+    ):
+        raise CapabilityFailure("native authority manifest signature mismatch")
+    return (
+        {key: _json_copy(value) for key, value in manifest.items()},
+        signature,
+    )
+
+
+def _provision_native_locked(
+    plan: VerifiedAuthorityBootstrapPlan,
+    backend: NativeAuthorityBackend,
+    wal: dict[str, object],
+    *,
+    fail_at: str | None,
+    allow_existing: bool,
+) -> dict[str, object]:
+    if wal.get("phase") == "COMPLETE" and not allow_existing:
+        raise AuthorityError(
+            "authority bootstrap capability has stale absence observations"
+        )
+    request = _native_bootstrap_request(plan, wal)
+    _maybe_crash(fail_at, "before_broker_dispatch")
+    if allow_existing or wal.get("phase") == "COMPLETE":
+        response = backend.recover_bootstrap(request)
+    else:
+        response = backend.bootstrap(request)
+    _maybe_crash(fail_at, "after_broker_dispatch")
+    _maybe_crash(fail_at, "before_manifest_readback")
+    manifest, signature = _verified_native_manifest(plan, backend, response)
+    _maybe_crash(fail_at, "after_manifest_readback")
+
+    if wal.get("phase") == "COMPLETE":
+        stored_signature = wal.get("broker_signature")
+        if (
+            not isinstance(stored_signature, str)
+            or not backend.verify_bootstrap_manifest(
+                {**manifest, "broker_signature": stored_signature}
+            )
+        ):
+            raise AuthorityError("completed authority WAL signature mismatch")
+        return {**manifest, "broker_signature": stored_signature}
+
+    _maybe_crash(fail_at, "before_wal_complete")
+    wal["phase"] = "COMPLETE"
+    wal["broker_signature"] = signature
+    _write_wal(Path(plan.descriptor.wal_locator), wal)
+    _maybe_crash(fail_at, "after_wal_complete")
+    return manifest
 
 
 def _provision_locked(
@@ -773,6 +1279,15 @@ def _provision_locked(
         _write_wal(wal_path, wal)
         _maybe_crash(fail_at, "after_wal_fsync")
 
+    if isinstance(backend, NativeAuthorityBackend):
+        return _provision_native_locked(
+            plan,
+            backend,
+            wal,
+            fail_at=fail_at,
+            allow_existing=allow_existing,
+        )
+
     if wal.get("phase") == "COMPLETE":
         if not allow_existing:
             raise AuthorityError(
@@ -784,7 +1299,7 @@ def _provision_locked(
             canonical_json_bytes(manifest), signature
         ):
             raise AuthorityError("completed authority WAL signature mismatch")
-        return manifest
+        return {**manifest, "broker_signature": signature}
 
     _maybe_crash(fail_at, "before_broker_dispatch")
     items = _item_values(plan, wal["wal_digest"], backend)
@@ -820,7 +1335,7 @@ def _provision_locked(
     if hasattr(backend, "provision_calls"):
         backend.provision_calls += 1
     _maybe_crash(fail_at, "after_wal_complete")
-    return manifest
+    return {**manifest, "broker_signature": wal["broker_signature"]}
 
 
 def bootstrap_authority(
@@ -881,60 +1396,19 @@ class VerifiedAnchorTransition:
 
     @property
     def document(self) -> dict[str, object]:
+        if self.__consumed:
+            raise AuthorityError("anchor transition already consumed")
         return copy.deepcopy(self.__document)
 
     def consume(self) -> dict[str, object]:
         if self.__consumed:
             raise AuthorityError("anchor transition already consumed")
+        document = self.document
         self.__consumed = True
-        return self.document
+        return document
 
     def __reduce__(self):
         raise TypeError("VerifiedAnchorTransition is non-serializable")
-
-
-def verify_anchor_transition_request(
-    request: object,
-    expected: Mapping[str, object],
-    *,
-    authority: IntegrityAuthority,
-    now: int | None = None,
-) -> VerifiedAnchorTransition:
-    if not isinstance(request, Mapping):
-        raise AuthorityError("anchor transition request must be an object")
-    if not isinstance(expected, Mapping):
-        raise AuthorityError("expected transition binding must be an object")
-    document = _json_copy(request)
-    for name, wanted in expected.items():
-        if document.get(name) != wanted:
-            raise AuthorityError(f"anchor transition {name} binding mismatch")
-    if set(document) != set(expected) | {"authorization_mac"}:
-        raise AuthorityError("anchor transition fields mismatch")
-    old_generation = document.get("old_generation")
-    new_generation = document.get("new_generation")
-    if (
-        isinstance(old_generation, bool)
-        or not isinstance(old_generation, int)
-        or isinstance(new_generation, bool)
-        or not isinstance(new_generation, int)
-        or new_generation != old_generation + 1
-    ):
-        raise AuthorityError("anchor transition must advance exactly one generation")
-    current_time = int(time.time()) if now is None else now
-    expires_at = document.get("expires_at")
-    if (
-        isinstance(expires_at, bool)
-        or not isinstance(expires_at, int)
-        or expires_at <= current_time
-    ):
-        raise AuthorityError("anchor transition expired")
-    given = document.get("authorization_mac")
-    if not isinstance(given, str) or len(given) != 64:
-        raise AuthorityError("anchor transition authorization malformed")
-    calculated = authority._mac_anchor_transition_request(document)
-    if not hmac.compare_digest(given, calculated):
-        raise AuthorityError("anchor transition authorization failed")
-    return VerifiedAnchorTransition(_TRANSITION_TOKEN, document)
 
 
 def _anchor_lock(backend, namespace: str) -> threading.Lock:
@@ -956,6 +1430,7 @@ class LiveAnchorBroker:
 
     def __init__(
         self,
+        token: object,
         backend,
         *,
         namespace: str,
@@ -963,15 +1438,19 @@ class LiveAnchorBroker:
         caller_code_identity: str,
         broker_code_identity: str,
     ) -> None:
+        if token not in (_AUTHORITY_TOKEN, _TEST_AUTHORITY_TOKEN):
+            raise TypeError("LiveAnchorBroker requires an attested native backend")
         self.__backend = backend
         self.__namespace = namespace
         self.__installation_id = installation_id
         self.__caller_code_identity = caller_code_identity
         self.__broker_code_identity = broker_code_identity
         self.__lock = _anchor_lock(backend, namespace)
-        self.qualifying = bool(getattr(backend, "qualifying", False))
+        self.qualifying = token is _AUTHORITY_TOKEN
 
     def current_state(self) -> tuple[int, str]:
+        if isinstance(self.__backend, NativeAuthorityBackend):
+            return self.__backend.anchor_read(self.__namespace)
         try:
             return self.__backend.anchors[self.__namespace]
         except KeyError as error:
@@ -983,7 +1462,7 @@ class LiveAnchorBroker:
         if not isinstance(transition, VerifiedAnchorTransition):
             raise TypeError("VerifiedAnchorTransition required")
         with self.__lock:
-            document = transition.consume()
+            document = transition.document
             expected = {
                 "namespace": self.__namespace,
                 "installation_id": self.__installation_id,
@@ -1006,16 +1485,30 @@ class LiveAnchorBroker:
                 document["new_generation"],
                 document["new_commitment"],
             )
+            if isinstance(self.__backend, NativeAuthorityBackend):
+                receipt = self.__backend.compare_and_advance(transition)
+                if self.current_state() != new_state:
+                    raise CapabilityFailure("anchor durable readback failed")
+                if not self.verify_receipt(receipt):
+                    raise CapabilityFailure(
+                        "native anchor receipt verification failed"
+                    )
+                return receipt
+            transition.consume()
             self.__backend.anchors[self.__namespace] = new_state
             if self.current_state() != new_state:
                 raise CapabilityFailure("anchor durable readback failed")
-            receipt = {
-                "installation_id": self.__installation_id,
-                "anchor_namespace": self.__namespace,
-                "anchor_backend_id": "native-keychain-anchor-v1",
-                "receipt_key_id": f"broker-receipt:{self.__installation_id}",
-                "transition_domain": document["domain"],
-                "transition_digest": _domain_digest(
+            receipt = new_document(
+                "state-anchor-receipt",
+                self.__installation_id,
+                created_at=time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+                anchor_namespace=self.__namespace,
+                anchor_backend_id="native-keychain-anchor-v1",
+                receipt_key_id=f"broker-receipt:{self.__installation_id}",
+                transition_domain=document["domain"],
+                transition_digest=_domain_digest(
                     b"agent-harness/verified-anchor-transition/v1\0",
                     {
                         key: item
@@ -1023,20 +1516,37 @@ class LiveAnchorBroker:
                         if key != "authorization_mac"
                     },
                 ),
-                "old_generation": document["old_generation"],
-                "old_commitment": document["old_commitment"],
-                "new_generation": document["new_generation"],
-                "new_commitment": document["new_commitment"],
-                "operation_id": document["nonce"],
-            }
+                old_generation=document["old_generation"],
+                old_commitment=document["old_commitment"],
+                new_generation=document["new_generation"],
+                new_commitment=document["new_commitment"],
+                operation_id=document["nonce"],
+            )
             receipt["broker_receipt"] = self.__backend.sign_receipt(
                 canonical_json_bytes(receipt)
             )
             return receipt
 
+    def _transition_context(self) -> dict[str, object]:
+        generation, commitment = self.current_state()
+        return {
+            "namespace": self.__namespace,
+            "installation_id": self.__installation_id,
+            "caller_code_identity": self.__caller_code_identity,
+            "broker_code_identity": self.__broker_code_identity,
+            "generation": generation,
+            "commitment": commitment,
+        }
+
     def verify_receipt(self, receipt: object) -> bool:
         if not isinstance(receipt, Mapping):
             return False
+        if isinstance(self.__backend, NativeAuthorityBackend):
+            return (
+                receipt.get("installation_id") == self.__installation_id
+                and receipt.get("anchor_namespace") == self.__namespace
+                and self.__backend.verify_receipt(receipt)
+            )
         signature = receipt.get("broker_receipt")
         if not isinstance(signature, str):
             return False
@@ -1052,6 +1562,134 @@ class LiveAnchorBroker:
         )
 
 
+def open_live_anchor_broker(
+    backend: NativeAuthorityBackend,
+    *,
+    namespace: str,
+    installation_id: str,
+    caller_code_identity: str,
+    broker_code_identity: str,
+) -> LiveAnchorBroker:
+    if not isinstance(backend, NativeAuthorityBackend) or not backend.qualifying:
+        raise TypeError("qualifying NativeAuthorityBackend required")
+    health = backend.health()
+    if health.get("code_identity") != broker_code_identity:
+        raise CapabilityFailure("native anchor broker identity mismatch")
+    return LiveAnchorBroker(
+        _AUTHORITY_TOKEN,
+        backend,
+        namespace=namespace,
+        installation_id=installation_id,
+        caller_code_identity=caller_code_identity,
+        broker_code_identity=broker_code_identity,
+    )
+
+
+def issue_installation_anchor_transition(
+    phase: VerifiedInstallationState,
+    broker: LiveAnchorBroker,
+    *,
+    authority: IntegrityAuthority,
+    now: int | None = None,
+) -> VerifiedAnchorTransition:
+    if not isinstance(phase, VerifiedInstallationState):
+        raise TypeError("VerifiedInstallationState required")
+    if not isinstance(broker, LiveAnchorBroker):
+        raise TypeError("LiveAnchorBroker required")
+    context = broker._transition_context()
+    phase_document = phase.document
+    binding = phase_document.get("anchor_transition")
+    required = {
+        "old_commitment",
+        "new_commitment",
+        "wal_digest",
+        "event_digest",
+        "check_digest",
+        "record_digest",
+        "authorization_epoch",
+    }
+    if not isinstance(binding, Mapping) or set(binding) != required:
+        raise AuthorityError(
+            "verified installation state transition binding is incomplete"
+        )
+    for name in (
+        "old_commitment",
+        "new_commitment",
+        "wal_digest",
+        "event_digest",
+        "check_digest",
+        "record_digest",
+    ):
+        value = binding[name]
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise AuthorityError(
+                f"verified installation state {name} is invalid"
+            )
+    if binding["old_commitment"] != context["commitment"]:
+        raise AuthorityError("verified installation state old anchor mismatch")
+    phase.require_binding(
+        expected_installation_id=context["installation_id"],
+        expected_generation=context["generation"] + 1,
+        expected_anchor_commitment=binding["new_commitment"],
+    )
+    authorization_epoch = binding["authorization_epoch"]
+    if (
+        isinstance(authorization_epoch, bool)
+        or not isinstance(authorization_epoch, int)
+        or authorization_epoch < 0
+    ):
+        raise AuthorityError(
+            "verified installation state authorization_epoch is invalid"
+        )
+    task_id = phase_document.get("publication_transaction")
+    plan_digests = {
+        receipt.document.get("plan_digest")
+        for receipt in phase.receipts.values()
+    }
+    plan_digest = next(iter(plan_digests)) if len(plan_digests) == 1 else None
+    if not isinstance(task_id, str) or not task_id:
+        raise AuthorityError(
+            "verified installation state task identity is missing"
+        )
+    if not isinstance(plan_digest, str) or len(plan_digest) != 64:
+        raise AuthorityError(
+            "verified installation state plan digest is invalid"
+        )
+    current_time = int(time.time()) if now is None else now
+    if not isinstance(authority, IntegrityAuthority):
+        raise TypeError("IntegrityAuthority required")
+    document = {
+        "domain": "installation-transaction",
+        "namespace": context["namespace"],
+        "installation_id": context["installation_id"],
+        "subject_kind": "task",
+        "subject_id": task_id,
+        "operation_kind": "publish-installation",
+        "old_generation": context["generation"],
+        "old_commitment": context["commitment"],
+        "new_generation": context["generation"] + 1,
+        "new_commitment": binding["new_commitment"],
+        "plan_digest": plan_digest,
+        "wal_digest": binding["wal_digest"],
+        "event_digest": binding["event_digest"],
+        "check_digest": binding["check_digest"],
+        "record_digest": binding["record_digest"],
+        "authorization_epoch": authorization_epoch,
+        "caller_code_identity": context["caller_code_identity"],
+        "broker_code_identity": context["broker_code_identity"],
+        "nonce": secrets.token_hex(16),
+        "expires_at": current_time + 300,
+    }
+    document["authorization_mac"] = (
+        authority.authenticate_installation_anchor_transition(phase, document)
+    )
+    return VerifiedAnchorTransition(_TRANSITION_TOKEN, document)
+
+
 def create_test_live_anchor_broker(
     backend,
     *,
@@ -1064,6 +1702,7 @@ def create_test_live_anchor_broker(
 ) -> LiveAnchorBroker:
     backend.anchors[namespace] = (initial_generation, initial_commitment)
     return LiveAnchorBroker(
+        _TEST_AUTHORITY_TOKEN,
         backend,
         namespace=namespace,
         installation_id=installation_id,
@@ -1077,7 +1716,7 @@ class ApprovalAuthority:
         "__backend",
         "__expected_public_key_digest",
         "__broker_code_identity",
-        "__issued",
+        "__clock",
         "qualifying",
     )
 
@@ -1088,14 +1727,15 @@ class ApprovalAuthority:
         *,
         expected_public_key_digest: str,
         broker_code_identity: str,
+        clock: Callable[[], float],
     ) -> None:
-        if token is not _AUTHORITY_TOKEN:
+        if token not in (_AUTHORITY_TOKEN, _TEST_AUTHORITY_TOKEN):
             raise TypeError("ApprovalAuthority requires a protected backend")
         self.__backend = backend
         self.__expected_public_key_digest = expected_public_key_digest
         self.__broker_code_identity = broker_code_identity
-        self.__issued: set[str] = set()
-        self.qualifying = bool(getattr(backend, "qualifying", False))
+        self.__clock = clock
+        self.qualifying = token is _AUTHORITY_TOKEN
 
     def health(self) -> dict[str, object]:
         if self.__backend.code_identity != self.__broker_code_identity:
@@ -1119,7 +1759,7 @@ class ApprovalAuthority:
         display_summary: str,
         *,
         interaction: object,
-    ) -> str:
+    ) -> dict[str, object]:
         self.health()
         protected = _require_protected_interaction(interaction)
         if not protected.user_presence:
@@ -1159,20 +1799,61 @@ class ApprovalAuthority:
                 )
         if not display_summary.strip():
             raise AuthorityError("canonical approval display summary is empty")
+        expires_at = datetime.fromisoformat(
+            envelope["expires_at"].removesuffix("Z") + "+00:00"
+        ).timestamp()
+        lifetime = expires_at - float(self.__clock())
+        if lifetime <= 0:
+            raise AuthorityError("external-write envelope expired")
+        if lifetime > 900:
+            raise AuthorityError(
+                "external-write envelope has excessive horizon"
+            )
         signature = self.__backend.approve(
             canonical_json_bytes(envelope),
             display_summary.encode(),
             protected_user_presence=True,
         )
-        self.__issued.add(signature)
-        return signature
+        if not isinstance(signature, Mapping):
+            raise CapabilityFailure("approval broker returned malformed signature")
+        return _json_copy(signature)
 
-    def verify_public_key(self, signature: str) -> bool:
+    def verify_public_key(
+        self,
+        envelope: Mapping[str, object],
+        display_summary: str,
+        signature: object,
+    ) -> bool:
         self.health()
-        return signature in self.__issued
+        if not isinstance(envelope, Mapping) or not isinstance(display_summary, str):
+            return False
+        return bool(
+            self.__backend.verify_approval(
+                canonical_json_bytes(envelope),
+                display_summary.encode(),
+                signature,
+            )
+        )
 
 
 _AUTHORITY_TOKEN = object()
+
+
+def open_approval_authority(
+    backend: NativeAuthorityBackend,
+    *,
+    expected_public_key_digest: str,
+    broker_code_identity: str,
+) -> ApprovalAuthority:
+    if not isinstance(backend, NativeAuthorityBackend) or not backend.qualifying:
+        raise TypeError("qualifying NativeAuthorityBackend required")
+    return ApprovalAuthority(
+        _AUTHORITY_TOKEN,
+        backend,
+        expected_public_key_digest=expected_public_key_digest,
+        broker_code_identity=broker_code_identity,
+        clock=time.time,
+    )
 
 
 def create_test_approval_authority(
@@ -1180,10 +1861,12 @@ def create_test_approval_authority(
     *,
     expected_public_key_digest: str,
     broker_code_identity: str,
+    current_time: int | None = None,
 ) -> ApprovalAuthority:
     return ApprovalAuthority(
-        _AUTHORITY_TOKEN,
+        _TEST_AUTHORITY_TOKEN,
         backend,
         expected_public_key_digest=expected_public_key_digest,
         broker_code_identity=broker_code_identity,
+        clock=time.time if current_time is None else lambda: current_time,
     )

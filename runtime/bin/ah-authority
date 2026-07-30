@@ -24,8 +24,18 @@ if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
 fi
 
 BINARY="${AGENT_HARNESS_AUTHORITY_BINARY:-}"
+EXPECTED_DIGEST="${AGENT_HARNESS_AUTHORITY_CONTENT_DIGEST:-}"
+EXPECTED_IDENTITY="${AGENT_HARNESS_AUTHORITY_CODE_IDENTITY:-}"
 [ -n "$BINARY" ] || {
   echo "AGENT_HARNESS_AUTHORITY_BINARY must name the verified native broker" >&2
+  exit 1
+}
+[ -n "$EXPECTED_DIGEST" ] || {
+  echo "AGENT_HARNESS_AUTHORITY_CONTENT_DIGEST must be pinned" >&2
+  exit 1
+}
+[ -n "$EXPECTED_IDENTITY" ] || {
+  echo "AGENT_HARNESS_AUTHORITY_CODE_IDENTITY must be pinned" >&2
   exit 1
 }
 case "$BINARY" in
@@ -61,6 +71,29 @@ canonical_path() {
 REAL="$(canonical_path "$BINARY")"
 [ "$REAL" = "$BINARY" ] || {
   echo "verified native authority broker path is not canonical" >&2
+  exit 1
+}
+
+ACTUAL_DIGEST="$(/usr/bin/shasum -a 256 "$BINARY" | /usr/bin/awk '{print $1}')"
+[ "$ACTUAL_DIGEST" = "$EXPECTED_DIGEST" ] || {
+  echo "verified native authority broker content digest mismatch" >&2
+  exit 1
+}
+ATTESTATION="$("$BINARY" --attest)"
+ACTUAL_IDENTITY="$(printf '%s' "$ATTESTATION" |
+  /usr/bin/plutil -extract code_identity raw -o - -- -)"
+ATTESTED_DIGEST="$(printf '%s' "$ATTESTATION" |
+  /usr/bin/plutil -extract content_digest raw -o - -- -)"
+[ "$ACTUAL_IDENTITY" = "$EXPECTED_IDENTITY" ] || {
+  echo "verified native authority broker code identity mismatch" >&2
+  exit 1
+}
+[ "$ATTESTED_DIGEST" = "$EXPECTED_DIGEST" ] || {
+  echo "verified native authority broker self-digest mismatch" >&2
+  exit 1
+}
+[ "$(/usr/bin/shasum -a 256 "$BINARY" | /usr/bin/awk '{print $1}')" = "$EXPECTED_DIGEST" ] || {
+  echo "verified native authority broker changed after attestation" >&2
   exit 1
 }
 exec "$BINARY" "$@"

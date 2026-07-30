@@ -4,10 +4,16 @@ import copy
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
+import uuid
 
-from .contracts import canonical_json_bytes, require_document
+from .contracts import (
+    FINAL_INSTALL_PLAN_DOMAIN,
+    canonical_json_bytes,
+    require_document,
+)
 
 
 class IntegrityError(ValueError):
@@ -117,6 +123,195 @@ _MAC_REQUIRED_FIELDS = {
 }
 
 
+def _require_nonempty_string(
+    document: Mapping[str, object], field: str
+) -> str:
+    value = document.get(field)
+    if not isinstance(value, str) or not value:
+        raise IntegrityError(f"{field} must be a non-empty string")
+    return value
+
+
+def _require_digest(document: Mapping[str, object], field: str) -> str:
+    value = _require_nonempty_string(document, field)
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise IntegrityError(f"{field} must be lowercase SHA-256")
+    return value
+
+
+def _require_generation(document: Mapping[str, object], field: str) -> int:
+    value = document.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise IntegrityError(f"{field} must be a non-negative integer")
+    return value
+
+
+def _require_absolute_path(
+    document: Mapping[str, object], field: str
+) -> str:
+    value = _require_nonempty_string(document, field)
+    if not Path(value).is_absolute():
+        raise IntegrityError(f"{field} must be an absolute path")
+    return value
+
+
+def _require_string_list(
+    document: Mapping[str, object], field: str
+) -> list[str]:
+    value = document.get(field)
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise IntegrityError(f"{field} must be a string list")
+    return value
+
+
+def _require_phase(
+    document: Mapping[str, object], *allowed: str
+) -> None:
+    if document.get("phase") not in allowed:
+        raise IntegrityError("phase is invalid")
+
+
+def _validate_mac_semantics(
+    operation: str, document: Mapping[str, object]
+) -> None:
+    if operation == "adapter_receipt":
+        for field in ("host", "receipt_id", "applied_transaction"):
+            _require_nonempty_string(document, field)
+        _require_string_list(document, "targets")
+        for field in (
+            "before_metadata_digest",
+            "after_metadata_digest",
+            "plan_digest",
+            "anchor_commitment",
+        ):
+            _require_digest(document, field)
+        _require_generation(document, "generation")
+        _require_absolute_path(document, "root")
+    elif operation == "installation_index":
+        _require_generation(document, "generation")
+        if document.get("lifecycle_state") not in {
+            "INSTALLING",
+            "INSTALLED",
+            "FINALIZING",
+            "FINALIZED",
+            "ROLLED_BACK",
+        }:
+            raise IntegrityError("lifecycle_state is invalid")
+        _require_nonempty_string(document, "publication_transaction")
+        _require_digest(document, "predecessor_digest")
+        _require_absolute_path(document, "runtime_root")
+        _require_absolute_path(document, "rollback_root")
+        _require_digest(document, "anchor_commitment")
+        receipts = document.get("receipts")
+        count = document.get("receipt_count")
+        if (
+            not isinstance(receipts, list)
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count != len(receipts)
+        ):
+            raise IntegrityError("receipt_count must match receipts")
+        for entry in receipts:
+            if not isinstance(entry, Mapping):
+                raise IntegrityError("receipt inventory entry is invalid")
+            for field in ("receipt_id", "path"):
+                _require_nonempty_string(entry, field)
+            _require_digest(entry, "digest")
+    elif operation == "installation_publication_wal":
+        prior = _require_generation(document, "prior_generation")
+        new = _require_generation(document, "new_generation")
+        if new != prior + 1:
+            raise IntegrityError("publication generations must advance by one")
+        for field in (
+            "prior_index_digest",
+            "new_index_digest",
+            "transaction_digest",
+            "plan_digest",
+        ):
+            _require_digest(document, field)
+        if not isinstance(document.get("prepared_receipts"), list):
+            raise IntegrityError("prepared_receipts must be a list")
+        _require_phase(document, "PREPARED", "APPLIED", "COMPLETE")
+    elif operation == "authority_bootstrap_wal":
+        locators = document.get("locators")
+        attributes = document.get("item_attributes")
+        inverses = document.get("conditional_inverses")
+        if (
+            not isinstance(locators, Mapping)
+            or not locators
+            or any(
+                not isinstance(name, str)
+                or not isinstance(locator, str)
+                or not locator
+                for name, locator in locators.items()
+            )
+        ):
+            raise IntegrityError("locators must be a non-empty string mapping")
+        if not isinstance(attributes, Mapping):
+            raise IntegrityError("item_attributes must be an object")
+        if not isinstance(inverses, list) or any(
+            not isinstance(item, Mapping) for item in inverses
+        ):
+            raise IntegrityError("conditional_inverses must be an object list")
+        _require_nonempty_string(document, "broker_code_identity")
+        _require_nonempty_string(document, "creator_id")
+        signature = document.get("broker_signature")
+        if signature is not None and (
+            not isinstance(signature, str) or not signature
+        ):
+            raise IntegrityError("broker_signature is invalid")
+        _require_phase(document, "PREPARED", "COMPLETE")
+    elif operation == "signing_key_bootstrap_wal":
+        for field in ("keychain_locator", "operation_id", "creator_id"):
+            _require_nonempty_string(document, field)
+        if not isinstance(document.get("item_attributes"), Mapping):
+            raise IntegrityError("item_attributes must be an object")
+        if not isinstance(document.get("conditional_inverse"), Mapping):
+            raise IntegrityError("conditional_inverse must be an object")
+        _require_phase(document, "PREPARED", "COMPLETE")
+    elif operation == "state_anchor_receipt":
+        for field in (
+            "anchor_namespace",
+            "anchor_backend_id",
+            "receipt_key_id",
+            "transition_domain",
+            "operation_id",
+            "broker_receipt",
+        ):
+            _require_nonempty_string(document, field)
+        _require_digest(document, "transition_digest")
+        old = _require_generation(document, "old_generation")
+        new = _require_generation(document, "new_generation")
+        if new != old + 1:
+            raise IntegrityError("anchor generations must advance by one")
+        _require_digest(document, "old_commitment")
+        _require_digest(document, "new_commitment")
+    elif operation == "check_record":
+        _require_generation(document, "sequence")
+        for field in (
+            "verifier_digest",
+            "output_digest",
+            "prior_hash",
+            "record_hash",
+        ):
+            _require_digest(document, field)
+        if document.get("result") not in {"PASS", "FAIL", "WARN"}:
+            raise IntegrityError("check result is invalid")
+    elif operation == "check_tail":
+        _require_nonempty_string(document, "task_id")
+        for field in (
+            "task_version",
+            "expected_sequence",
+            "checkpoint_generation",
+        ):
+            _require_generation(document, field)
+        _require_digest(document, "expected_record_hash")
+
+
 def _json_copy(value: object) -> object:
     return json.loads(canonical_json_bytes(value))
 
@@ -211,6 +406,10 @@ class VerifiedAdapterReceipt(_VerifiedValue):
     __slots__ = ()
 
 
+class VerifiedStateAnchorReceipt(_VerifiedValue):
+    __slots__ = ()
+
+
 class VerifiedInstallPlan(_VerifiedValue):
     __slots__ = ()
 
@@ -282,19 +481,30 @@ def _issue(
 class IntegrityAuthority:
     """Narrow authenticated-document boundary; it exposes no generic signer."""
 
-    __slots__ = ("__key_id", "__mac_operation", "qualifying")
+    __slots__ = (
+        "__key_id",
+        "__installation_id",
+        "__mac_operation",
+        "qualifying",
+    )
 
     def __init__(
         self,
         token: object,
         *,
         key_id: str,
+        installation_id: str,
         mac_operation: Callable[[bytes, bytes], bytes],
         qualifying: bool,
     ) -> None:
         if token is not _AUTHORITY_TOKEN:
             raise TypeError("IntegrityAuthority requires an opaque key handle")
+        try:
+            uuid.UUID(installation_id)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise IntegrityError("authority installation_id must be UUID") from error
         self.__key_id = key_id
+        self.__installation_id = installation_id
         self.__mac_operation = mac_operation
         self.qualifying = qualifying
 
@@ -303,8 +513,8 @@ class IntegrityAuthority:
         return self.__key_id
 
     def _mac_for(self, operation: str, value: Mapping[str, object]) -> str:
-        if not isinstance(value.get("installation_id"), str):
-            raise IntegrityError("authenticated payload requires installation_id")
+        if value.get("installation_id") != self.__installation_id:
+            raise IntegrityError("authenticated payload installation mismatch")
         payload = canonical_json_bytes(_unsigned(value))
         return self.__mac_operation(_MAC_DOMAINS[operation], payload).hex()
 
@@ -321,6 +531,7 @@ class IntegrityAuthority:
             raise IntegrityError(
                 f"{kind} is incomplete for authentication: {', '.join(missing)}"
             )
+        _validate_mac_semantics(operation, document)
         return self._mac_for(operation, document)
 
     def mac_adapter_receipt(self, value: Mapping[str, object]) -> str:
@@ -367,20 +578,80 @@ class IntegrityAuthority:
     def mac_check_tail(self, value: Mapping[str, object]) -> str:
         return self._mac_document("check_tail", "check-tail", value)
 
-    def _mac_anchor_transition_request(
-        self, value: Mapping[str, object]
+    def authenticate_installation_anchor_transition(
+        self,
+        phase: VerifiedInstallationState,
+        value: Mapping[str, object],
     ) -> str:
-        unsigned = {
-            key: copy.deepcopy(item)
-            for key, item in value.items()
-            if key != "authorization_mac"
+        """Authenticate only the exact transition derived from verified phase state."""
+        if not isinstance(phase, VerifiedInstallationState):
+            raise TypeError("VerifiedInstallationState required")
+        phase_document = phase.document
+        self._verify_mac(phase_document, "installation_index")
+        transition = phase_document.get("anchor_transition")
+        if not isinstance(transition, Mapping):
+            raise IntegrityError("verified installation transition is missing")
+        unsigned = _unsigned(value, "authorization_mac")
+        required = {
+            "domain",
+            "namespace",
+            "installation_id",
+            "subject_kind",
+            "subject_id",
+            "operation_kind",
+            "old_generation",
+            "old_commitment",
+            "new_generation",
+            "new_commitment",
+            "plan_digest",
+            "wal_digest",
+            "event_digest",
+            "check_digest",
+            "record_digest",
+            "authorization_epoch",
+            "caller_code_identity",
+            "broker_code_identity",
+            "nonce",
+            "expires_at",
         }
-        if not isinstance(unsigned.get("installation_id"), str):
-            raise IntegrityError("authenticated payload requires installation_id")
-        payload = canonical_json_bytes(unsigned)
-        return self.__mac_operation(
-            _MAC_DOMAINS["anchor_transition_request"], payload
-        ).hex()
+        if set(unsigned) != required:
+            raise IntegrityError("anchor transition fields mismatch")
+        receipts = phase.receipts.values()
+        plan_digests = {
+            receipt.document.get("plan_digest") for receipt in receipts
+        }
+        expected = {
+            "domain": "installation-transaction",
+            "installation_id": phase.installation_id,
+            "subject_kind": "task",
+            "subject_id": phase_document.get("publication_transaction"),
+            "operation_kind": "publish-installation",
+            "old_generation": phase.generation - 1,
+            "old_commitment": transition.get("old_commitment"),
+            "new_generation": phase.generation,
+            "new_commitment": transition.get("new_commitment"),
+            "plan_digest": (
+                next(iter(plan_digests)) if len(plan_digests) == 1 else None
+            ),
+            "wal_digest": transition.get("wal_digest"),
+            "event_digest": transition.get("event_digest"),
+            "check_digest": transition.get("check_digest"),
+            "record_digest": transition.get("record_digest"),
+            "authorization_epoch": transition.get("authorization_epoch"),
+        }
+        if any(unsigned.get(name) != expected_value for name, expected_value in expected.items()):
+            raise IntegrityError("anchor transition verified-state binding mismatch")
+        for name in (
+            "namespace",
+            "caller_code_identity",
+            "broker_code_identity",
+            "nonce",
+        ):
+            _require_nonempty_string(unsigned, name)
+        expires_at = unsigned.get("expires_at")
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+            raise IntegrityError("anchor transition expiry is invalid")
+        return self._mac_for("anchor_transition_request", unsigned)
 
     def _verify_mac(
         self, value: Mapping[str, object], operation: str
@@ -496,7 +767,7 @@ class IntegrityAuthority:
         if not isinstance(given, str):
             raise IntegrityError("missing plan digest")
         expected = hashlib.sha256(
-            b"agent-harness/install-plan/v1\0"
+            FINAL_INSTALL_PLAN_DOMAIN
             + canonical_json_bytes(
                 {
                     key: item
@@ -522,6 +793,39 @@ class IntegrityAuthority:
             generation=bindings[1],
             root=bindings[2],
             anchor_commitment=bindings[3],
+        )
+
+    def verify_state_anchor_receipt(
+        self,
+        value: object,
+        *,
+        expected_installation_id: str,
+        expected_generation: int | None = None,
+        expected_anchor_commitment: str | None = None,
+    ) -> VerifiedStateAnchorReceipt:
+        document = require_document(value, "state-anchor-receipt")
+        verified = self._verify_mac(document, "state_anchor_receipt")
+        if verified.get("installation_id") != expected_installation_id:
+            raise IntegrityError("installation binding mismatch")
+        generation = verified.get("new_generation")
+        commitment = verified.get("new_commitment")
+        if (
+            expected_generation is not None
+            and generation != expected_generation
+        ):
+            raise IntegrityError("generation binding mismatch")
+        if (
+            expected_anchor_commitment is not None
+            and commitment != expected_anchor_commitment
+        ):
+            raise IntegrityError("anchor_commitment binding mismatch")
+        return _issue(
+            VerifiedStateAnchorReceipt,
+            verified,
+            installation_id=expected_installation_id,
+            generation=generation,
+            root=None,
+            anchor_commitment=commitment,
         )
 
     def verify_bootstrap_plan(
@@ -596,7 +900,10 @@ class IntegrityAuthority:
 
 
 def create_test_integrity_authority(
-    secret: bytes, *, key_id: str = "test-integrity-key"
+    secret: bytes,
+    *,
+    installation_id: str,
+    key_id: str = "test-integrity-key",
 ) -> IntegrityAuthority:
     if not isinstance(secret, bytes) or not secret:
         raise ValueError("test secret must be non-empty bytes")
@@ -608,19 +915,10 @@ def create_test_integrity_authority(
     return IntegrityAuthority(
         _AUTHORITY_TOKEN,
         key_id=key_id,
+        installation_id=installation_id,
         mac_operation=operation,
         qualifying=False,
     )
-
-
-def authorize_anchor_transition_request_for_test(
-    authority: IntegrityAuthority, value: Mapping[str, object]
-) -> dict[str, object]:
-    document = dict(value)
-    document["authorization_mac"] = authority._mac_anchor_transition_request(
-        document
-    )
-    return document
 
 
 def load_installation_state(

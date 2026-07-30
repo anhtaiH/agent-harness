@@ -24,6 +24,8 @@ SCHEMA_REQUIRED_FIELDS = {
         "ordered_manifest_digest",
         "source_commit",
         "frozen_snapshot_digest",
+        "digest",
+        "entries",
     },
     "workspace-manifest": {
         "workspace",
@@ -52,6 +54,7 @@ SCHEMA_REQUIRED_FIELDS = {
         "predecessor_digest",
         "runtime_root",
         "rollback_root",
+        "anchor_commitment",
         "receipts",
         "receipt_count",
         "mac",
@@ -73,6 +76,10 @@ SCHEMA_REQUIRED_FIELDS = {
         "creator_id",
         "item_attributes",
         "conditional_inverses",
+        "bootstrap_digest",
+        "pending_plan_commitment",
+        "wal_locator",
+        "wal_digest",
         "phase",
         "broker_signature",
     },
@@ -80,13 +87,18 @@ SCHEMA_REQUIRED_FIELDS = {
         "broker_code_identity",
         "broker_content_digest",
         "approval_public_key_digest",
+        "approval_persistent_reference",
         "anchor_backend_id",
         "anchor_namespace",
         "receipt_key_id",
+        "receipt_public_key_digest",
+        "receipt_persistent_reference",
         "terminal_pin_locator",
         "terminal_pin_attributes",
         "capability_state",
         "bootstrap_digest",
+        "pending_plan_commitment",
+        "broker_signature",
     },
     "signing-key-bootstrap-wal": {
         "keychain_locator",
@@ -130,11 +142,15 @@ SCHEMA_REQUIRED_FIELDS = {
     },
     "adapter-receipt": {
         "host",
+        "receipt_id",
         "applied_transaction",
         "targets",
         "before_metadata_digest",
         "after_metadata_digest",
         "plan_digest",
+        "generation",
+        "root",
+        "anchor_commitment",
         "mac",
     },
     "host-report": {
@@ -224,6 +240,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             canonical_json_bytes({"b": 2, "a": 1}), b'{"a":1,"b":2}'
         )
+
+    def test_canonical_json_normalizes_non_finite_number_errors(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    SchemaError, "non-finite JSON number"
+                ):
+                    canonical_json_bytes({"value": value})
 
     def test_newer_schema_blocks_mutation(self):
         with self.assertRaisesRegex(SchemaError, "newer schema_version 2"):
