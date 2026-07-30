@@ -27,6 +27,7 @@ from harness_core.authorities import (
     open_native_authority_backend,
     open_test_native_authority_backend,
     plan_authority_bootstrap,
+    prepare_native_authority_roles,
     protected_interaction_for_test,
     verify_authority_bootstrap,
 )
@@ -316,36 +317,35 @@ print(json.dumps({{
                 (root / "runtime/authority/macos-broker.swift").read_bytes()
             )
 
-            result = subprocess.run(
-                [wrapper, "--attest"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=os.environ,
-                timeout=180,
+            prepared = prepare_native_authority_roles(
+                wrapper,
+                case_root / "production-roles",
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            attestation = json.loads(result.stdout)
+            attestation = prepared.attestation
             wrapper_digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
-            native_binary = (
-                source.parent / ".ah-authority-cache/macos-broker"
-            )
+            verifier_binary = prepared.verifier_path
+            native_binary = case_root / "production-roles/macos-broker-internal"
+            verifier_digest = hashlib.sha256(
+                verifier_binary.read_bytes()
+            ).hexdigest()
             native_digest = hashlib.sha256(
                 native_binary.read_bytes()
             ).hexdigest()
             self.assertEqual(
                 attestation["launcher_content_digest"],
-                wrapper_digest,
-            )
-            self.assertEqual(
-                attestation["launcher_code_identity"],
-                f"sha256:{wrapper_digest}",
+                verifier_digest,
             )
             self.assertEqual(
                 attestation["native_broker_content_digest"],
                 native_digest,
             )
+            self.assertNotEqual(wrapper_digest, verifier_digest)
             self.assertNotEqual(wrapper_digest, native_digest)
+            self.assertNotEqual(verifier_digest, native_digest)
+            self.assertNotEqual(
+                attestation["launcher_code_identity"],
+                attestation["native_broker_code_identity"],
+            )
             self.assertIsInstance(
                 attestation["native_broker_code_identity"],
                 str,
@@ -357,7 +357,7 @@ print(json.dumps({{
                 body.digest,
                 requirements(
                     wal,
-                    broker_locator=str(wrapper),
+                    broker_locator=str(verifier_binary),
                     launcher_code_identity=attestation[
                         "launcher_code_identity"
                     ],
@@ -370,6 +370,17 @@ print(json.dumps({{
                     native_broker_content_digest=attestation[
                         "native_broker_content_digest"
                     ],
+                    launcher_code_directory_hash=attestation[
+                        "launcher_code_directory_hash"
+                    ],
+                    native_broker_code_directory_hash=attestation[
+                        "native_broker_code_directory_hash"
+                    ],
+                    controller_public_key_digest=attestation[
+                        "controller_public_key_digest"
+                    ],
+                    authority_provider=attestation["authority_provider"],
+                    verifier_mode=attestation["verifier_mode"],
                 ),
             )
             plan = build_final_install_plan(
@@ -385,6 +396,7 @@ print(json.dumps({{
                 descriptor.to_document(),
                 expected_installation_id=INSTALLATION_ID,
                 observations=observations,
+                prepared_roles=prepared,
             )
             backend = open_native_authority_backend(verified)
             self.assertEqual(

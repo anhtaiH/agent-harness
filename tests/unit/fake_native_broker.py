@@ -300,9 +300,14 @@ def main() -> None:
         content_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         response = {
             "protocol_version": 1,
+            "authority_provider": "signed-memory",
+            "verifier_mode": "test",
+            "controller_public_key_digest": "c" * 64,
             "launcher_code_identity": CODE_IDENTITY,
+            "launcher_code_directory_hash": "d" * 40,
             "launcher_content_digest": content_digest,
             "native_broker_code_identity": CODE_IDENTITY,
+            "native_broker_code_directory_hash": "e" * 40,
             "native_broker_content_digest": content_digest,
         }
     elif command == "health":

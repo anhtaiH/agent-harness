@@ -60,14 +60,16 @@ plist_create() {
 
 compile_role() {
   local role_flag="$1"
-  local info_plist="$2"
-  local output="$3"
-  local module_cache="$4"
+  local provider_flag="$2"
+  local info_plist="$3"
+  local output="$4"
+  local module_cache="$5"
   SWIFT_MODULECACHE_PATH="$module_cache/swift" \
     CLANG_MODULE_CACHE_PATH="$module_cache/clang" \
     "$SWIFTC" -sdk "$SDK" \
       -target "$ARCH-apple-macosx${SDK_MAJOR}.0" \
       "-D$role_flag" \
+      "-D$provider_flag" \
       "$SOURCE" \
       -Xlinker -sectcreate \
       -Xlinker __TEXT \
@@ -91,6 +93,7 @@ build_roles() {
   local provider="$2"
   local verifier_mode="$3"
   local identifier_suffix="$4"
+  local controller_public_key="$5"
   local verifier="$target/macos-broker"
   local broker="$target/macos-broker-internal"
   local verifier_info="$target/verifier-info.plist"
@@ -100,6 +103,15 @@ build_roles() {
   local verifier_digest
   local verifier_requirement
   local verifier_cdhash
+  local provider_flag
+
+  if [ "$provider" = "security" ]; then
+    provider_flag="AGENT_HARNESS_SECURITY_PROVIDER"
+  elif [ "$provider" = "signed-memory" ]; then
+    provider_flag="AGENT_HARNESS_SIGNED_MEMORY_PROVIDER"
+  else
+    authority_error "native authority provider is invalid"
+  fi
 
   /bin/mkdir -p "$target"
   /bin/chmod 700 "$target"
@@ -112,8 +124,11 @@ build_roles() {
     -string "$provider" "$verifier_info"
   /usr/bin/plutil -insert AgentHarnessStatePath \
     -string "$state_path" "$verifier_info"
+  /usr/bin/plutil -insert AgentHarnessControllerPublicKey \
+    -string "$controller_public_key" "$verifier_info"
   compile_role \
     AGENT_HARNESS_VERIFIER_ROLE \
+    "$provider_flag" \
     "$verifier_info" \
     "$verifier" \
     "$module_cache"
@@ -132,8 +147,12 @@ build_roles() {
     "local.agent-harness.broker.$identifier_suffix"
   /usr/bin/plutil -insert AgentHarnessProvider \
     -string "$provider" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessVerifierMode \
+    -string "$verifier_mode" "$broker_info"
   /usr/bin/plutil -insert AgentHarnessStatePath \
     -string "$state_path" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessControllerPublicKey \
+    -string "$controller_public_key" "$broker_info"
   /usr/bin/plutil -insert AgentHarnessTrustedVerifierRequirement \
     -string "$verifier_requirement" "$broker_info"
   /usr/bin/plutil -insert AgentHarnessTrustedVerifierCodeHash \
@@ -142,6 +161,7 @@ build_roles() {
     -string "$verifier_digest" "$broker_info"
   compile_role \
     AGENT_HARNESS_BROKER_ROLE \
+    "$provider_flag" \
     "$broker_info" \
     "$broker" \
     "$module_cache"
@@ -170,8 +190,9 @@ attestation_with_path() {
     /usr/bin/plutil -convert json -o - -- -
 }
 
-if [ "${1:-}" = "--build-test-roles" ] && [ "$#" -eq 2 ]; then
+if [ "${1:-}" = "--build-test-roles" ] && [ "$#" -eq 3 ]; then
   TEST_ROOT="$2"
+  CONTROLLER_PUBLIC_KEY="$3"
   case "$TEST_ROOT" in
     /*) ;;
     *) authority_error "test role root must be absolute" ;;
@@ -179,50 +200,32 @@ if [ "${1:-}" = "--build-test-roles" ] && [ "$#" -eq 2 ]; then
   [ ! -e "$TEST_ROOT" ] ||
     [ -d "$TEST_ROOT" ] ||
     authority_error "test role root must be a directory"
-  build_roles "$TEST_ROOT" "signed-memory" "test" "test"
+  build_roles \
+    "$TEST_ROOT" "signed-memory" "test" "test" \
+    "$CONTROLLER_PUBLIC_KEY"
   attestation_with_path \
     "$TEST_ROOT/macos-broker" \
     "$TEST_ROOT/state.json"
   exit 0
 fi
 
-if [ "${1:-}" = "--protocol-test" ] && [ "$#" -eq 3 ]; then
-  CASE="$2"
-  TEST_ROOT="$3"
-  case "$TEST_ROOT" in
+if [ "${1:-}" = "--build-production-roles" ] && [ "$#" -eq 3 ]; then
+  BUILD_ROOT="$2"
+  CONTROLLER_PUBLIC_KEY="$3"
+  case "$BUILD_ROOT" in
     /*) ;;
-    *) authority_error "protocol test root must be absolute" ;;
+    *) authority_error "production role root must be absolute" ;;
   esac
-  if [ "$CASE" = "oversized-request" ]; then
-    /bin/mkdir -p "$TEST_ROOT"
-    /bin/chmod 700 "$TEST_ROOT"
-    OVERSIZED="$TEST_ROOT/oversized-request"
-    /usr/sbin/mkfile 1048577 "$OVERSIZED"
-    [ "$(/usr/bin/stat -f '%HT|%z' "$OVERSIZED")" \
-      = "Regular File|1048577" ] ||
-      authority_error "oversized request fixture is invalid"
-    /bin/rm -f "$OVERSIZED"
-    printf '%s\n' '{"result":"denied"}'
-    exit 0
-  fi
-  PROVIDER="signed-memory"
-  if [ "$CASE" = "custom-launcher-test-sentinels" ]; then
-    PROVIDER="security"
-  fi
-  build_roles "$TEST_ROOT" "$PROVIDER" "test" "protocol"
-  if [ "$CASE" = "different-signed-peer" ] ||
-    [ "$CASE" = "raw-caller-fds" ]; then
-    ALT_ROOT="$TEST_ROOT/alternate"
-    build_roles "$ALT_ROOT" "signed-memory" "test" "alternate"
-    exec "$TEST_ROOT/macos-broker" \
-      --protocol-test "$CASE" "$ALT_ROOT/macos-broker"
-  fi
-  if [ "$CASE" = "custom-launcher-test-sentinels" ]; then
-    AGENT_HARNESS_PROVIDER="signed-memory" \
-      AGENT_HARNESS_FAKE_USER_PRESENCE="approved" \
-      exec "$TEST_ROOT/macos-broker" --protocol-test "$CASE"
-  fi
-  exec "$TEST_ROOT/macos-broker" --protocol-test "$CASE"
+  [ ! -e "$BUILD_ROOT" ] ||
+    [ -d "$BUILD_ROOT" ] ||
+    authority_error "production role root must be a directory"
+  build_roles \
+    "$BUILD_ROOT" "security" "production" "production" \
+    "$CONTROLLER_PUBLIC_KEY"
+  attestation_with_path \
+    "$BUILD_ROOT/macos-broker" \
+    "$BUILD_ROOT/state.json"
+  exit 0
 fi
 
 if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
@@ -232,7 +235,7 @@ if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
     /bin/rm -rf "$WORK"
   }
   trap cleanup_self_test EXIT
-  build_roles "$WORK" "signed-memory" "test" "self-test"
+  build_roles "$WORK" "signed-memory" "test" "self-test" "AA=="
   "$WORK/macos-broker" --self-test
   exit 0
 fi
@@ -243,10 +246,15 @@ CACHE_BROKER="$CACHE_ROOT/macos-broker-internal"
 CACHE_MANIFEST="$CACHE_ROOT/manifest"
 CACHE_LOCK="$CACHE_ROOT/.build-lock"
 SOURCE_DIGEST="$(stable_digest "$SOURCE")"
+SWIFTC_IDENTITY="$(
+  "$SWIFTC" -version |
+    /usr/bin/shasum -a 256 |
+    /usr/bin/awk '{print $1}'
+)"
 BUILD_IDENTITY="$(
   {
     printf 'source=%s\n' "$SOURCE_DIGEST"
-    printf 'swiftc=%s\n' "$(stable_digest "$SWIFTC")"
+    printf 'swiftc=%s\n' "$SWIFTC_IDENTITY"
     printf 'sdk=%s\n' "$SDK_VERSION"
     printf 'target=%s-%s\n' "$ARCH" "$SDK_MAJOR"
   } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
@@ -264,10 +272,8 @@ cache_is_valid() {
     return 1
   require_role "$CACHE_VERIFIER" &&
     require_role "$CACHE_BROKER" &&
-    [ "$(/usr/bin/sed -n '2p' "$CACHE_MANIFEST")" =
-      "$(stable_digest "$CACHE_VERIFIER")" ] &&
-    [ "$(/usr/bin/sed -n '3p' "$CACHE_MANIFEST")" =
-      "$(stable_digest "$CACHE_BROKER")" ]
+    [ "$(/usr/bin/sed -n '2p' "$CACHE_MANIFEST")" = "$(stable_digest "$CACHE_VERIFIER")" ] &&
+    [ "$(/usr/bin/sed -n '3p' "$CACHE_MANIFEST")" = "$(stable_digest "$CACHE_BROKER")" ]
 }
 
 if [ -e "$CACHE_LOCK" ]; then
@@ -292,7 +298,8 @@ trap cleanup_lock EXIT HUP INT TERM
 
 if ! cache_is_valid; then
   BUILD_ROOT="$(/usr/bin/mktemp -d "$CACHE_ROOT/.build.XXXXXX")"
-  build_roles "$BUILD_ROOT" "security" "production" "production"
+  build_roles \
+    "$BUILD_ROOT" "security" "production" "production" "AA=="
   VERIFIER_DIGEST="$(stable_digest "$BUILD_ROOT/macos-broker")"
   BROKER_DIGEST="$(stable_digest "$BUILD_ROOT/macos-broker-internal")"
   printf '%s\n%s\n%s\n' \

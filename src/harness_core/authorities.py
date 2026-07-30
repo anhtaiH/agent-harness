@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import ctypes
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
@@ -10,8 +11,11 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import stat
+import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -71,9 +75,15 @@ _TRANSITION_TOKEN = object()
 _RETIREMENT_TOKEN = object()
 _INTERACTION_TOKEN = object()
 _TEST_AUTHORITY_TOKEN = object()
+_NATIVE_PREPARATION_TOKEN = object()
+_NATIVE_CONTROLLER_TOKEN = object()
+_NATIVE_RECOVERY_TOKEN = object()
 _LOCK_GUARD = threading.Lock()
 _BOOTSTRAP_LOCKS: dict[str, threading.Lock] = {}
 _ANCHOR_LOCKS: dict[tuple[int, str], threading.Lock] = {}
+_P256_SUBJECT_PUBLIC_KEY_INFO_PREFIX = bytes.fromhex(
+    "3059301306072a8648ce3d020106082a8648ce3d030107034200"
+)
 
 
 class AuthorityError(ValueError):
@@ -86,6 +96,684 @@ class CapabilityFailure(AuthorityError):
 
 class InjectedAuthorityCrash(RuntimeError):
     pass
+
+
+class _SecurityBindings:
+    __slots__ = (
+        "core_foundation",
+        "security",
+        "cf_release",
+        "cf_dictionary_create",
+        "cf_number_create",
+        "cf_data_create",
+        "cf_data_get_length",
+        "cf_data_get_byte_ptr",
+        "sec_key_create_random_key",
+        "sec_key_copy_public_key",
+        "sec_key_copy_external_representation",
+        "sec_key_create_signature",
+        "dictionary_key_callbacks",
+        "dictionary_value_callbacks",
+        "cf_boolean_false",
+        "attr_key_type",
+        "attr_key_size_in_bits",
+        "attr_is_permanent",
+        "key_type_ec_p256",
+        "ecdsa_message_sha256",
+    )
+
+    def __init__(self) -> None:
+        if sys.platform != "darwin":
+            raise CapabilityFailure(
+                "transient native controller keys require macOS"
+            )
+        self.core_foundation = ctypes.CDLL(
+            "/System/Library/Frameworks/"
+            "CoreFoundation.framework/CoreFoundation"
+        )
+        self.security = ctypes.CDLL(
+            "/System/Library/Frameworks/Security.framework/Security"
+        )
+
+        self.cf_release = self.core_foundation.CFRelease
+        self.cf_release.argtypes = [ctypes.c_void_p]
+        self.cf_release.restype = None
+        self.cf_dictionary_create = self.core_foundation.CFDictionaryCreate
+        self.cf_dictionary_create.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        self.cf_dictionary_create.restype = ctypes.c_void_p
+        self.cf_number_create = self.core_foundation.CFNumberCreate
+        self.cf_number_create.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        self.cf_number_create.restype = ctypes.c_void_p
+        self.cf_data_create = self.core_foundation.CFDataCreate
+        self.cf_data_create.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_long,
+        ]
+        self.cf_data_create.restype = ctypes.c_void_p
+        self.cf_data_get_length = self.core_foundation.CFDataGetLength
+        self.cf_data_get_length.argtypes = [ctypes.c_void_p]
+        self.cf_data_get_length.restype = ctypes.c_long
+        self.cf_data_get_byte_ptr = self.core_foundation.CFDataGetBytePtr
+        self.cf_data_get_byte_ptr.argtypes = [ctypes.c_void_p]
+        self.cf_data_get_byte_ptr.restype = ctypes.POINTER(ctypes.c_ubyte)
+
+        self.sec_key_create_random_key = self.security.SecKeyCreateRandomKey
+        self.sec_key_create_random_key.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.sec_key_create_random_key.restype = ctypes.c_void_p
+        self.sec_key_copy_public_key = self.security.SecKeyCopyPublicKey
+        self.sec_key_copy_public_key.argtypes = [ctypes.c_void_p]
+        self.sec_key_copy_public_key.restype = ctypes.c_void_p
+        self.sec_key_copy_external_representation = (
+            self.security.SecKeyCopyExternalRepresentation
+        )
+        self.sec_key_copy_external_representation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.sec_key_copy_external_representation.restype = ctypes.c_void_p
+        self.sec_key_create_signature = self.security.SecKeyCreateSignature
+        self.sec_key_create_signature.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.sec_key_create_signature.restype = ctypes.c_void_p
+
+        self.dictionary_key_callbacks = ctypes.addressof(
+            ctypes.c_byte.in_dll(
+                self.core_foundation,
+                "kCFTypeDictionaryKeyCallBacks",
+            )
+        )
+        self.dictionary_value_callbacks = ctypes.addressof(
+            ctypes.c_byte.in_dll(
+                self.core_foundation,
+                "kCFTypeDictionaryValueCallBacks",
+            )
+        )
+        self.cf_boolean_false = self._constant(
+            self.core_foundation,
+            "kCFBooleanFalse",
+        )
+        self.attr_key_type = self._constant(
+            self.security,
+            "kSecAttrKeyType",
+        )
+        self.attr_key_size_in_bits = self._constant(
+            self.security,
+            "kSecAttrKeySizeInBits",
+        )
+        self.attr_is_permanent = self._constant(
+            self.security,
+            "kSecAttrIsPermanent",
+        )
+        self.key_type_ec_p256 = self._constant(
+            self.security,
+            "kSecAttrKeyTypeECSECPrimeRandom",
+        )
+        self.ecdsa_message_sha256 = self._constant(
+            self.security,
+            "kSecKeyAlgorithmECDSASignatureMessageX962SHA256",
+        )
+
+    @staticmethod
+    def _constant(library: ctypes.CDLL, name: str) -> int:
+        value = ctypes.c_void_p.in_dll(library, name).value
+        if value is None:
+            raise CapabilityFailure(
+                f"native controller Security.framework symbol {name} is null"
+            )
+        return value
+
+    def release(self, value: int | None) -> None:
+        if value:
+            self.cf_release(value)
+
+    def data(self, value: bytes) -> int:
+        buffer = (ctypes.c_ubyte * len(value)).from_buffer_copy(value)
+        result = self.cf_data_create(None, buffer, len(value))
+        if not result:
+            raise CapabilityFailure(
+                "native controller message allocation failed"
+            )
+        return result
+
+    def data_bytes(self, value: int) -> bytes:
+        length = self.cf_data_get_length(value)
+        pointer = self.cf_data_get_byte_ptr(value)
+        if length <= 0 or not pointer:
+            raise CapabilityFailure(
+                "native controller Security.framework data is empty"
+            )
+        return ctypes.string_at(pointer, length)
+
+
+class _TransientControllerKey:
+    __slots__ = ("__bindings", "__private_key", "__public_key_der")
+
+    def __init__(
+        self,
+        bindings: _SecurityBindings,
+        private_key: int,
+        public_key_der: bytes,
+    ) -> None:
+        self.__bindings = bindings
+        self.__private_key: int | None = private_key
+        self.__public_key_der = bytes(public_key_der)
+
+    @classmethod
+    def generate(cls) -> _TransientControllerKey:
+        bindings = _SecurityBindings()
+        bit_count = ctypes.c_int32(256)
+        number = bindings.cf_number_create(
+            None,
+            3,
+            ctypes.byref(bit_count),
+        )
+        if not number:
+            raise CapabilityFailure(
+                "transient native controller key size allocation failed"
+            )
+        attributes: int | None = None
+        private_key: int | None = None
+        try:
+            keys = (ctypes.c_void_p * 3)(
+                bindings.attr_key_type,
+                bindings.attr_key_size_in_bits,
+                bindings.attr_is_permanent,
+            )
+            values = (ctypes.c_void_p * 3)(
+                bindings.key_type_ec_p256,
+                number,
+                bindings.cf_boolean_false,
+            )
+            attributes = bindings.cf_dictionary_create(
+                None,
+                keys,
+                values,
+                len(keys),
+                bindings.dictionary_key_callbacks,
+                bindings.dictionary_value_callbacks,
+            )
+            if not attributes:
+                raise CapabilityFailure(
+                    "transient native controller attributes failed"
+                )
+            error = ctypes.c_void_p()
+            private_key = bindings.sec_key_create_random_key(
+                attributes,
+                ctypes.byref(error),
+            )
+            if not private_key:
+                bindings.release(error.value)
+                raise CapabilityFailure(
+                    "transient native controller key unavailable"
+                )
+            public_key = bindings.sec_key_copy_public_key(private_key)
+            if not public_key:
+                raise CapabilityFailure(
+                    "transient native controller public key unavailable"
+                )
+            external: int | None = None
+            try:
+                error = ctypes.c_void_p()
+                external = (
+                    bindings.sec_key_copy_external_representation(
+                        public_key,
+                        ctypes.byref(error),
+                    )
+                )
+                if not external:
+                    bindings.release(error.value)
+                    raise CapabilityFailure(
+                        "transient native controller public key export failed"
+                    )
+                raw_public_key = bindings.data_bytes(external)
+            finally:
+                bindings.release(external)
+                bindings.release(public_key)
+            if (
+                len(raw_public_key) != 65
+                or raw_public_key[0] != 0x04
+            ):
+                raise CapabilityFailure(
+                    "transient native controller public key is malformed"
+                )
+            public_key_der = (
+                _P256_SUBJECT_PUBLIC_KEY_INFO_PREFIX + raw_public_key
+            )
+            controller_key = cls(
+                bindings,
+                private_key,
+                public_key_der,
+            )
+            private_key = None
+            return controller_key
+        finally:
+            bindings.release(private_key)
+            bindings.release(attributes)
+            bindings.release(number)
+
+    @property
+    def public_key_der(self) -> bytes:
+        if self.__private_key is None:
+            raise CapabilityFailure(
+                "transient native controller key is unavailable"
+            )
+        return bytes(self.__public_key_der)
+
+    def sign_and_destroy(self, message: bytes) -> bytes:
+        private_key = self.__private_key
+        if private_key is None:
+            raise CapabilityFailure(
+                "transient native controller key already consumed"
+            )
+        self.__private_key = None
+        message_data: int | None = None
+        signature: int | None = None
+        try:
+            message_data = self.__bindings.data(message)
+            error = ctypes.c_void_p()
+            signature = self.__bindings.sec_key_create_signature(
+                private_key,
+                self.__bindings.ecdsa_message_sha256,
+                message_data,
+                ctypes.byref(error),
+            )
+            if not signature:
+                self.__bindings.release(error.value)
+                raise CapabilityFailure(
+                    "native bootstrap controller signature failed"
+                )
+            return self.__bindings.data_bytes(signature)
+        finally:
+            self.__bindings.release(signature)
+            self.__bindings.release(message_data)
+            self.__bindings.release(private_key)
+
+    def close(self) -> None:
+        private_key = self.__private_key
+        self.__private_key = None
+        self.__bindings.release(private_key)
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __copy__(self):
+        raise TypeError("transient native controller key is non-copyable")
+
+    def __deepcopy__(self, memo):
+        raise TypeError("transient native controller key is non-copyable")
+
+    def __reduce__(self):
+        raise TypeError("transient native controller key is non-serializable")
+
+
+class _NativeControllerSigner:
+    __slots__ = (
+        "__controller_key",
+        "__public_key_digest",
+        "__attempted",
+        "__lock",
+    )
+
+    def __init__(
+        self,
+        token: object,
+        controller_key: _TransientControllerKey,
+        public_key_digest: str,
+    ) -> None:
+        if token is not _NATIVE_CONTROLLER_TOKEN:
+            raise TypeError("native controller signer is private")
+        self.__controller_key: _TransientControllerKey | None = controller_key
+        self.__public_key_digest = public_key_digest
+        self.__attempted = False
+        self.__lock = threading.Lock()
+
+    @property
+    def public_key_digest(self) -> str:
+        return self.__public_key_digest
+
+    def authorize_bootstrap_once(
+        self,
+        *,
+        controller_nonce: str,
+        request_digest: str,
+        setup_body_digest: str,
+        descriptor_digest: str,
+        final_plan_digest: str,
+        wal_digest: str,
+        controller_public_key_digest: str,
+        verifier_code_directory_hash: str,
+        broker_code_directory_hash: str,
+        provider_kind: str,
+        build_profile: str,
+    ) -> dict[str, object]:
+        with self.__lock:
+            if self.__attempted or self.__controller_key is None:
+                raise CapabilityFailure(
+                    "native bootstrap controller capability already attempted"
+                )
+            self.__attempted = True
+            controller_key = self.__controller_key
+            self.__controller_key = None
+        body = {
+            "schema": "agent-harness/controller-bootstrap-authorization",
+            "schema_version": 1,
+            "operation": "bootstrap",
+            "recovery_policy": "resume-exact-reservation-only",
+            "controller_nonce": controller_nonce,
+            "request_digest": request_digest,
+            "setup_body_digest": setup_body_digest,
+            "descriptor_digest": descriptor_digest,
+            "final_plan_digest": final_plan_digest,
+            "wal_digest": wal_digest,
+            "controller_public_key_digest": controller_public_key_digest,
+            "verifier_code_directory_hash": verifier_code_directory_hash,
+            "broker_code_directory_hash": broker_code_directory_hash,
+            "provider_kind": provider_kind,
+            "build_profile": build_profile,
+        }
+        body_bytes = canonical_json_bytes(body)
+        signature = controller_key.sign_and_destroy(body_bytes)
+        return {
+            **_json_copy(body),
+            "signature": base64.b64encode(signature).decode("ascii"),
+        }
+
+    def __reduce__(self):
+        raise TypeError("native controller signer is non-serializable")
+
+
+class _NativeRecoveryCapability:
+    __slots__ = ("__binding", "__consumed")
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        final_plan: Mapping[str, object],
+        descriptor: Mapping[str, object],
+        observations: Mapping[str, object],
+    ) -> None:
+        if token is not _NATIVE_RECOVERY_TOKEN:
+            raise TypeError("native recovery capability is private")
+        self.__binding = canonical_json_bytes(
+            {
+                "final_plan": final_plan,
+                "descriptor": descriptor,
+                "observations": observations,
+            }
+        )
+        self.__consumed = False
+
+    def consume(self, plan: VerifiedAuthorityBootstrapPlan) -> None:
+        if self.__consumed:
+            raise CapabilityFailure(
+                "native recovery capability already consumed"
+            )
+        binding = canonical_json_bytes(
+            {
+                "final_plan": plan.final_plan,
+                "descriptor": plan.descriptor.to_document(),
+                "observations": plan.observations,
+            }
+        )
+        if not hmac.compare_digest(binding, self.__binding):
+            raise CapabilityFailure("native recovery capability binding mismatch")
+        self.__consumed = True
+
+    def __reduce__(self):
+        raise TypeError("native recovery capability is non-serializable")
+
+
+class NativeAuthorityPreparation:
+    __slots__ = (
+        "__attestation",
+        "__verifier_path",
+        "__state_path",
+        "__controller_key",
+        "__public_key_digest",
+        "__claimed",
+        "__test_profile",
+    )
+
+    def __init__(
+        self,
+        token: object,
+        *,
+        attestation: Mapping[str, object],
+        verifier_path: Path,
+        state_path: Path,
+        controller_key: _TransientControllerKey,
+        public_key_digest: str,
+        test_profile: bool,
+    ) -> None:
+        if token is not _NATIVE_PREPARATION_TOKEN:
+            raise TypeError("NativeAuthorityPreparation cannot be constructed directly")
+        self.__attestation = canonical_json_bytes(attestation)
+        self.__verifier_path = verifier_path
+        self.__state_path = state_path
+        self.__controller_key: _TransientControllerKey | None = controller_key
+        self.__public_key_digest = public_key_digest
+        self.__claimed = False
+        self.__test_profile = test_profile
+
+    @property
+    def attestation(self) -> dict[str, object]:
+        return json.loads(self.__attestation)
+
+    @property
+    def verifier_path(self) -> Path:
+        return self.__verifier_path
+
+    @property
+    def state_path(self) -> Path:
+        return self.__state_path
+
+    @property
+    def controller_public_key_digest(self) -> str:
+        return self.__public_key_digest
+
+    @property
+    def authority_provider(self) -> str:
+        return "signed-memory" if self.__test_profile else "security"
+
+    @property
+    def verifier_mode(self) -> str:
+        return "test" if self.__test_profile else "production"
+
+    def _bind(self, descriptor: object) -> _NativeControllerSigner:
+        if self.__claimed or self.__controller_key is None:
+            raise CapabilityFailure(
+                "native authority preparation already bound"
+            )
+        attestation = self.attestation
+        expected = {
+            "broker_locator": str(self.__verifier_path),
+            "launcher_code_identity": attestation["launcher_code_identity"],
+            "launcher_code_directory_hash": attestation[
+                "launcher_code_directory_hash"
+            ],
+            "launcher_content_digest": attestation[
+                "launcher_content_digest"
+            ],
+            "native_broker_code_identity": attestation[
+                "native_broker_code_identity"
+            ],
+            "native_broker_code_directory_hash": attestation[
+                "native_broker_code_directory_hash"
+            ],
+            "native_broker_content_digest": attestation[
+                "native_broker_content_digest"
+            ],
+            "controller_public_key_digest": self.__public_key_digest,
+            "authority_provider": self.authority_provider,
+            "verifier_mode": self.verifier_mode,
+        }
+        if any(
+            getattr(descriptor, name, None) != value
+            for name, value in expected.items()
+        ):
+            raise CapabilityFailure(
+                "native authority preparation does not match descriptor"
+            )
+        self.__claimed = True
+        controller_key = self.__controller_key
+        self.__controller_key = None
+        return _NativeControllerSigner(
+            _NATIVE_CONTROLLER_TOKEN,
+            controller_key,
+            self.__public_key_digest,
+        )
+
+    def __reduce__(self):
+        raise TypeError("NativeAuthorityPreparation is non-serializable")
+
+
+def _prepare_native_authority_roles(
+    executable: Path | str,
+    build_root: Path | str,
+    *,
+    test_profile: bool,
+) -> NativeAuthorityPreparation:
+    wrapper = Path(executable).resolve()
+    root = Path(build_root).resolve()
+    if not root.is_absolute():
+        raise CapabilityFailure("native authority build root must be absolute")
+    controller_key = _TransientControllerKey.generate()
+    try:
+        public_key_der = controller_key.public_key_der
+        public_key_digest = hashlib.sha256(public_key_der).hexdigest()
+        command = (
+            "--build-test-roles"
+            if test_profile
+            else "--build-production-roles"
+        )
+        built = subprocess.run(
+            [
+                str(wrapper),
+                command,
+                str(root),
+                base64.b64encode(public_key_der).decode("ascii"),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            timeout=180,
+        )
+        if built.returncode != 0:
+            raise CapabilityFailure(
+                "native authority role preparation failed: "
+                + built.stderr.decode("utf-8", "replace").strip()
+            )
+        try:
+            prepared = json.loads(built.stdout)
+            attestation = prepared["attestation"]
+            verifier_path = Path(prepared["verifier_path"]).resolve()
+            state_path = Path(prepared["state_path"]).resolve()
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise CapabilityFailure(
+                "native authority role preparation is malformed"
+            ) from error
+        if (
+            not isinstance(attestation, Mapping)
+            or attestation.get("controller_public_key_digest")
+            != public_key_digest
+            or attestation.get("authority_provider")
+            != ("signed-memory" if test_profile else "security")
+            or attestation.get("verifier_mode")
+            != ("test" if test_profile else "production")
+        ):
+            raise CapabilityFailure(
+                "native authority controller commitment mismatch"
+            )
+        preparation = NativeAuthorityPreparation(
+            _NATIVE_PREPARATION_TOKEN,
+            attestation=attestation,
+            verifier_path=verifier_path,
+            state_path=state_path,
+            controller_key=controller_key,
+            public_key_digest=public_key_digest,
+            test_profile=test_profile,
+        )
+        controller_key = None
+        return preparation
+    finally:
+        if controller_key is not None:
+            controller_key.close()
+
+
+def prepare_native_authority_roles(
+    executable: Path | str,
+    build_root: Path | str,
+) -> NativeAuthorityPreparation:
+    return _prepare_native_authority_roles(
+        executable,
+        build_root,
+        test_profile=False,
+    )
+
+
+def prepare_native_protocol_roles_for_test(
+    executable: Path | str,
+    build_root: Path | str,
+) -> NativeAuthorityPreparation:
+    return _prepare_native_authority_roles(
+        executable,
+        build_root,
+        test_profile=True,
+    )
+
+
+def _live_code_directory_hash(pid: int) -> str:
+    if sys.platform != "darwin":
+        raise CapabilityFailure(
+            "live native code identity requires macOS"
+        )
+    library = ctypes.CDLL(
+        "/usr/lib/libSystem.B.dylib",
+        use_errno=True,
+    )
+    csops = library.csops
+    csops.argtypes = [
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    csops.restype = ctypes.c_int
+    digest = (ctypes.c_ubyte * 20)()
+    if csops(pid, 5, digest, len(digest)) != 0:
+        raise CapabilityFailure(
+            "live native verifier code-directory hash unavailable"
+        )
+    return bytes(digest).hex()
+
+
+def _send_bounded_frame(channel: socket.socket, value: bytes) -> None:
+    if not value or len(value) > 1_048_576:
+        raise CapabilityFailure(
+            "native controller authorization exceeds size limit"
+        )
+    channel.sendall(struct.pack(">I", len(value)) + value)
 
 
 class VerifiedAuthorityRetirementPlan:
@@ -125,13 +813,21 @@ class NativeAuthorityBackend:
         "__bootstrap_dispatch_attempted",
         "__bootstrap_dispatch_lock",
         "__test_backend",
+        "__qualification_allowed",
+        "__controller_signer",
+        "__recovery_capability",
         "__verified_manifest",
         "__executable_device",
         "__executable_inode",
         "__launcher_content_digest",
         "__launcher_code_identity",
+        "__launcher_code_directory_hash",
         "__native_broker_content_digest",
         "__native_broker_code_identity",
+        "__native_broker_code_directory_hash",
+        "__controller_public_key_digest",
+        "__authority_provider",
+        "__verifier_mode",
     )
 
     def __init__(
@@ -148,6 +844,9 @@ class NativeAuthorityBackend:
         trusted_final_plan: bytes | None = None,
         trusted_descriptor: bytes | None = None,
         trusted_recovery: bool | None = None,
+        qualification_allowed: bool = False,
+        controller_signer: _NativeControllerSigner | None = None,
+        recovery_capability: _NativeRecoveryCapability | None = None,
     ) -> None:
         if token is not _NATIVE_BACKEND_TOKEN:
             raise TypeError("NativeAuthorityBackend requires verified attestation")
@@ -166,6 +865,9 @@ class NativeAuthorityBackend:
         self.__bootstrap_dispatch_attempted = False
         self.__bootstrap_dispatch_lock = threading.Lock()
         self.__test_backend = test_backend
+        self.__qualification_allowed = qualification_allowed
+        self.__controller_signer = controller_signer
+        self.__recovery_capability = recovery_capability
         self.__verified_manifest: bytes | None = None
         (
             self.__executable_device,
@@ -175,12 +877,25 @@ class NativeAuthorityBackend:
         self.__launcher_code_identity = str(
             attestation["launcher_code_identity"]
         )
+        self.__launcher_code_directory_hash = str(
+            attestation["launcher_code_directory_hash"]
+        )
         self.__native_broker_content_digest = str(
             attestation["native_broker_content_digest"]
         )
         self.__native_broker_code_identity = str(
             attestation["native_broker_code_identity"]
         )
+        self.__native_broker_code_directory_hash = str(
+            attestation["native_broker_code_directory_hash"]
+        )
+        self.__controller_public_key_digest = str(
+            attestation["controller_public_key_digest"]
+        )
+        self.__authority_provider = str(
+            attestation["authority_provider"]
+        )
+        self.__verifier_mode = str(attestation["verifier_mode"])
         if not hmac.compare_digest(
             self.__launcher_content_digest,
             str(attestation["launcher_content_digest"]),
@@ -274,12 +989,22 @@ class NativeAuthorityBackend:
             )
             or attestation.get("launcher_code_identity")
             != self.__launcher_code_identity
+            or attestation.get("launcher_code_directory_hash")
+            != self.__launcher_code_directory_hash
             or not hmac.compare_digest(
                 str(attestation.get("native_broker_content_digest")),
                 self.__native_broker_content_digest,
             )
             or attestation.get("native_broker_code_identity")
             != self.__native_broker_code_identity
+            or attestation.get("native_broker_code_directory_hash")
+            != self.__native_broker_code_directory_hash
+            or attestation.get("controller_public_key_digest")
+            != self.__controller_public_key_digest
+            or attestation.get("authority_provider")
+            != self.__authority_provider
+            or attestation.get("verifier_mode")
+            != self.__verifier_mode
         ):
             raise CapabilityFailure("native authority attestation mismatch")
 
@@ -422,6 +1147,72 @@ class NativeAuthorityBackend:
         request_bytes = canonical_json_bytes(request_value)
         if len(request_bytes) > 1_048_576:
             raise CapabilityFailure("native bootstrap request exceeds size limit")
+        descriptor = plan.descriptor
+        if recovery:
+            if self.__recovery_capability is None:
+                raise CapabilityFailure(
+                    "exact native recovery capability is unavailable"
+                )
+            self.__recovery_capability.consume(plan)
+            self.__recovery_capability = None
+            controller_release = {
+                "schema": "agent-harness/controller-bootstrap-recovery",
+                "schema_version": 1,
+                "operation": "bootstrap-recover",
+                "recovery_policy": "resume-exact-reservation-only",
+                "request_digest": hashlib.sha256(request_bytes).hexdigest(),
+                "setup_body_digest": plan.setup_body_digest,
+                "descriptor_digest": plan.descriptor_digest,
+                "final_plan_digest": plan.pending_plan_commitment,
+                "wal_digest": request_value["wal_digest"],
+                "controller_public_key_digest":
+                    descriptor.controller_public_key_digest,
+                "verifier_code_directory_hash":
+                    descriptor.launcher_code_directory_hash,
+                "broker_code_directory_hash":
+                    descriptor.native_broker_code_directory_hash,
+                "provider_kind": (
+                    "macos-security"
+                    if descriptor.authority_provider == "security"
+                    else "signed-memory-test"
+                ),
+                "build_profile": descriptor.verifier_mode,
+            }
+        else:
+            if self.__controller_signer is None:
+                raise CapabilityFailure(
+                    "native bootstrap controller capability is unavailable"
+                )
+            verifier_nonce = secrets.token_hex(32)
+            controller_release = (
+                self.__controller_signer.authorize_bootstrap_once(
+                    controller_nonce=verifier_nonce,
+                    request_digest=hashlib.sha256(
+                        request_bytes
+                    ).hexdigest(),
+                    setup_body_digest=plan.setup_body_digest,
+                    descriptor_digest=plan.descriptor_digest,
+                    final_plan_digest=plan.pending_plan_commitment,
+                    wal_digest=request_value["wal_digest"],
+                    controller_public_key_digest=(
+                        descriptor.controller_public_key_digest
+                    ),
+                    verifier_code_directory_hash=(
+                        descriptor.launcher_code_directory_hash
+                    ),
+                    broker_code_directory_hash=(
+                        descriptor.native_broker_code_directory_hash
+                    ),
+                    provider_kind=(
+                        "macos-security"
+                        if descriptor.authority_provider == "security"
+                        else "signed-memory-test"
+                    ),
+                    build_profile=descriptor.verifier_mode,
+                )
+            )
+            self.__controller_signer = None
+        controller_release_bytes = canonical_json_bytes(controller_release)
         environment = dict(self.__environment)
         self.__verify_current_attestation(environment)
         self.__revalidate_executable()
@@ -429,6 +1220,9 @@ class NativeAuthorityBackend:
             prefix=".authority-request-"
         )
         request_fd: int | None = None
+        controller_parent: socket.socket | None = None
+        controller_child: socket.socket | None = None
+        process: subprocess.Popen[bytes] | None = None
         try:
             try:
                 offset = 0
@@ -457,7 +1251,15 @@ class NativeAuthorityBackend:
             environment["AGENT_HARNESS_BOOTSTRAP_REQUEST_FD"] = str(
                 request_fd
             )
-            result = subprocess.run(
+            controller_parent, controller_child = socket.socketpair(
+                socket.AF_UNIX,
+                socket.SOCK_STREAM,
+            )
+            controller_parent.settimeout(5)
+            environment["AGENT_HARNESS_BOOTSTRAP_CONTROLLER_FD"] = str(
+                controller_child.fileno()
+            )
+            process = subprocess.Popen(
                 [
                     str(self.__executable),
                     "bootstrap-recover" if recovery else "bootstrap",
@@ -466,12 +1268,51 @@ class NativeAuthorityBackend:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=environment,
-                pass_fds=(request_fd,),
-                timeout=30,
+                pass_fds=(request_fd, controller_child.fileno()),
             )
+            controller_child.close()
+            controller_child = None
+            live_code_hash = _live_code_directory_hash(process.pid)
+            if not hmac.compare_digest(
+                live_code_hash,
+                descriptor.launcher_code_directory_hash.lower(),
+            ):
+                raise CapabilityFailure(
+                    "live native verifier code-directory hash mismatch"
+                )
+            _send_bounded_frame(controller_parent, controller_release_bytes)
+            controller_parent.settimeout(None)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=(
+                        2 if self.__verifier_mode == "test" else 30
+                    )
+                )
+            except subprocess.TimeoutExpired as error:
+                process.kill()
+                process.communicate(timeout=10)
+                raise CapabilityFailure(
+                    "native authority bootstrap timed out"
+                ) from error
+            result = subprocess.CompletedProcess(
+                process.args,
+                process.returncode,
+                stdout,
+                stderr,
+            )
+        except BaseException:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+            raise
         finally:
             if request_fd is not None:
                 os.close(request_fd)
+            if controller_parent is not None:
+                controller_parent.close()
+            if controller_child is not None:
+                controller_child.close()
             if temporary_path:
                 os.unlink(temporary_path)
         if result.returncode != 0:
@@ -537,7 +1378,7 @@ class NativeAuthorityBackend:
         if self.__trusted_plan_digest != plan.descriptor_digest:
             raise CapabilityFailure("native authority trusted plan mismatch")
         self.__verified_manifest = canonical_json_bytes(manifest)
-        self.__qualifying = True
+        self.__qualifying = self.__qualification_allowed
 
     def anchor_read(self, namespace: str) -> tuple[int, str]:
         response = self._request("anchor-read", {"namespace": namespace})
@@ -696,11 +1537,23 @@ def _attest_native_executable(
         not isinstance(attestation, dict)
         or attestation.get("protocol_version") != 1
         or attestation.get("launcher_content_digest") != content_digest
+        or attestation.get("authority_provider")
+        not in {"security", "signed-memory"}
+        or attestation.get("verifier_mode") not in {"production", "test"}
+        or not isinstance(
+            attestation.get("controller_public_key_digest"), str
+        )
         or not isinstance(attestation.get("launcher_code_identity"), str)
+        or not isinstance(
+            attestation.get("launcher_code_directory_hash"), str
+        )
         or not isinstance(
             attestation.get("native_broker_content_digest"), str
         )
         or not isinstance(attestation.get("native_broker_code_identity"), str)
+        or not isinstance(
+            attestation.get("native_broker_code_directory_hash"), str
+        )
     ):
         raise CapabilityFailure("native authority attestation mismatch")
     if hashlib.sha256(resolved.read_bytes()).hexdigest() != content_digest:
@@ -736,42 +1589,58 @@ def open_test_native_authority_backend(
         ).digest(),
         trusted_plan_digest=None,
         test_backend=True,
+        qualification_allowed=False,
+        controller_signer=None,
     )
 
 
-def open_native_authority_backend(
-    plan: object,
-    **caller_assertions: object,
+def _open_bound_native_authority_backend(
+    plan: VerifiedAuthorityBootstrapPlan,
+    *,
+    authority_provider: str,
+    verifier_mode: str,
+    qualification_allowed: bool,
 ) -> NativeAuthorityBackend:
-    if (
-        caller_assertions
-        or not isinstance(plan, VerifiedAuthorityBootstrapPlan)
-    ):
-        raise CapabilityFailure(
-            "qualifying native authority requires a trusted bootstrap plan"
-        )
     descriptor = plan.descriptor
     executable = Path(descriptor.broker_locator)
     if not executable.is_absolute():
         raise CapabilityFailure(
-            "trusted bootstrap helper locator must be absolute"
+            "native authority verifier locator must be absolute"
         )
     environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
     resolved, content_digest, attestation = _attest_native_executable(
         executable, environment=environment
     )
     if (
+        attestation["authority_provider"] != authority_provider
+        or attestation["verifier_mode"] != verifier_mode
+    ):
+        if qualification_allowed:
+            raise CapabilityFailure(
+                "production native authority rejects test roles and "
+                "non-protected providers"
+            )
+        raise CapabilityFailure(
+            "signed-memory test roles required for native protocol test core"
+        )
+    if (
         not hmac.compare_digest(
             content_digest, descriptor.launcher_content_digest
         )
         or attestation["launcher_code_identity"]
         != descriptor.launcher_code_identity
+        or attestation["launcher_code_directory_hash"]
+        != descriptor.launcher_code_directory_hash
         or not hmac.compare_digest(
             attestation["native_broker_content_digest"],
             descriptor.native_broker_content_digest,
         )
         or attestation["native_broker_code_identity"]
         != descriptor.native_broker_code_identity
+        or attestation["native_broker_code_directory_hash"]
+        != descriptor.native_broker_code_directory_hash
+        or attestation["controller_public_key_digest"]
+        != descriptor.controller_public_key_digest
     ):
         raise CapabilityFailure("native authority pinned identity mismatch")
     return NativeAuthorityBackend(
@@ -788,6 +1657,47 @@ def open_native_authority_backend(
             plan.descriptor.to_document()
         ),
         trusted_recovery=plan.recovery,
+        qualification_allowed=qualification_allowed,
+        controller_signer=(
+            None if plan.recovery else plan._take_native_controller()
+        ),
+        recovery_capability=(
+            plan._take_native_recovery() if plan.recovery else None
+        ),
+    )
+
+
+def open_native_authority_backend(
+    plan: object,
+    **caller_assertions: object,
+) -> NativeAuthorityBackend:
+    if (
+        caller_assertions
+        or not isinstance(plan, VerifiedAuthorityBootstrapPlan)
+    ):
+        raise CapabilityFailure(
+            "qualifying native authority requires a trusted bootstrap plan"
+        )
+    return _open_bound_native_authority_backend(
+        plan,
+        authority_provider="security",
+        verifier_mode="production",
+        qualification_allowed=True,
+    )
+
+
+def open_native_protocol_core_for_test(
+    plan: object,
+) -> NativeAuthorityBackend:
+    if not isinstance(plan, VerifiedAuthorityBootstrapPlan):
+        raise CapabilityFailure(
+            "verified bootstrap plan required for native protocol test core"
+        )
+    return _open_bound_native_authority_backend(
+        plan,
+        authority_provider="signed-memory",
+        verifier_mode="test",
+        qualification_allowed=False,
     )
 
 
@@ -797,6 +1707,14 @@ def _domain_digest(domain: bytes, value: object) -> str:
 
 def _json_copy(value: object):
     return json.loads(canonical_json_bytes(value))
+
+
+def _is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _source_document(value: object) -> dict[str, object]:
@@ -950,6 +1868,11 @@ class AuthorityBootstrapRequirements:
     initial_anchor_namespace: str
     initial_anchor_generation: int
     initial_anchor_commitment: str
+    authority_provider: str = "security"
+    verifier_mode: str = "production"
+    controller_public_key_digest: str = "c" * 64
+    launcher_code_directory_hash: str = "d" * 40
+    native_broker_code_directory_hash: str = "e" * 40
     broker_locator: str = "runtime/bin/ah-authority"
     approval_key_locator: str = APPROVAL_KEY_LOCATOR
     anchor_item_locator: str = ANCHOR_ITEM_LOCATOR
@@ -980,6 +1903,22 @@ class AuthorityBootstrapRequirements:
             or self.initial_anchor_generation != 0
         ):
             raise AuthorityError("initial anchor generation must be zero")
+        if self.authority_provider not in {"security", "signed-memory"}:
+            raise AuthorityError("authority provider is invalid")
+        if self.verifier_mode not in {"production", "test"}:
+            raise AuthorityError("authority verifier mode is invalid")
+        if not _is_lower_hex(self.controller_public_key_digest, 64):
+            raise AuthorityError(
+                "controller public key digest must be SHA-256"
+            )
+        for role, code_hash in (
+            ("launcher", self.launcher_code_directory_hash),
+            ("native broker", self.native_broker_code_directory_hash),
+        ):
+            if not _is_lower_hex(code_hash, 40):
+                raise AuthorityError(
+                    f"{role} code-directory hash must be 20-byte hex"
+                )
 
 
 @dataclass(frozen=True)
@@ -989,9 +1928,14 @@ class AuthorityBootstrapDescriptor:
     creator_id: str
     broker_locator: str
     launcher_code_identity: str
+    launcher_code_directory_hash: str
     launcher_content_digest: str
     native_broker_code_identity: str
+    native_broker_code_directory_hash: str
     native_broker_content_digest: str
+    authority_provider: str
+    verifier_mode: str
+    controller_public_key_digest: str
     wal_locator: str
     locator_map: Mapping[str, str]
     item_attributes: Mapping[str, object]
@@ -1000,6 +1944,24 @@ class AuthorityBootstrapDescriptor:
     initial_anchor_namespace: str
     initial_anchor_generation: int
     initial_anchor_commitment: str
+
+    def __post_init__(self) -> None:
+        if self.authority_provider not in {"security", "signed-memory"}:
+            raise AuthorityError("authority provider is invalid")
+        if self.verifier_mode not in {"production", "test"}:
+            raise AuthorityError("authority verifier mode is invalid")
+        if not _is_lower_hex(self.controller_public_key_digest, 64):
+            raise AuthorityError(
+                "controller public key digest must be SHA-256"
+            )
+        for role, code_hash in (
+            ("launcher", self.launcher_code_directory_hash),
+            ("native broker", self.native_broker_code_directory_hash),
+        ):
+            if not _is_lower_hex(code_hash, 40):
+                raise AuthorityError(
+                    f"{role} code-directory hash must be 20-byte hex"
+                )
 
     @property
     def locators(self) -> tuple[str, ...]:
@@ -1012,10 +1974,18 @@ class AuthorityBootstrapDescriptor:
             "creator_id": self.creator_id,
             "broker_locator": self.broker_locator,
             "launcher_code_identity": self.launcher_code_identity,
+            "launcher_code_directory_hash":
+                self.launcher_code_directory_hash,
             "launcher_content_digest": self.launcher_content_digest,
             "native_broker_code_identity": self.native_broker_code_identity,
+            "native_broker_code_directory_hash":
+                self.native_broker_code_directory_hash,
             "native_broker_content_digest":
                 self.native_broker_content_digest,
+            "authority_provider": self.authority_provider,
+            "verifier_mode": self.verifier_mode,
+            "controller_public_key_digest":
+                self.controller_public_key_digest,
             "wal_locator": self.wal_locator,
             "locators": _json_copy(self.locator_map),
             "item_attributes": _json_copy(self.item_attributes),
@@ -1042,9 +2012,14 @@ class AuthorityBootstrapDescriptor:
             "creator_id",
             "broker_locator",
             "launcher_code_identity",
+            "launcher_code_directory_hash",
             "launcher_content_digest",
             "native_broker_code_identity",
+            "native_broker_code_directory_hash",
             "native_broker_content_digest",
+            "authority_provider",
+            "verifier_mode",
+            "controller_public_key_digest",
             "wal_locator",
             "locators",
             "item_attributes",
@@ -1074,10 +2049,21 @@ class AuthorityBootstrapDescriptor:
             creator_id=value["creator_id"],
             broker_locator=value["broker_locator"],
             launcher_code_identity=value["launcher_code_identity"],
+            launcher_code_directory_hash=value[
+                "launcher_code_directory_hash"
+            ],
             launcher_content_digest=value["launcher_content_digest"],
             native_broker_code_identity=value["native_broker_code_identity"],
+            native_broker_code_directory_hash=value[
+                "native_broker_code_directory_hash"
+            ],
             native_broker_content_digest=value[
                 "native_broker_content_digest"
+            ],
+            authority_provider=value["authority_provider"],
+            verifier_mode=value["verifier_mode"],
+            controller_public_key_digest=value[
+                "controller_public_key_digest"
             ],
             wal_locator=value["wal_locator"],
             locator_map=dict(locators),
@@ -1125,10 +2111,18 @@ def plan_authority_bootstrap(
         creator_id=requirements.creator_id,
         broker_locator=requirements.broker_locator,
         launcher_code_identity=requirements.launcher_code_identity,
+        launcher_code_directory_hash=
+            requirements.launcher_code_directory_hash,
         launcher_content_digest=requirements.launcher_content_digest,
         native_broker_code_identity=requirements.native_broker_code_identity,
+        native_broker_code_directory_hash=
+            requirements.native_broker_code_directory_hash,
         native_broker_content_digest=
             requirements.native_broker_content_digest,
+        authority_provider=requirements.authority_provider,
+        verifier_mode=requirements.verifier_mode,
+        controller_public_key_digest=
+            requirements.controller_public_key_digest,
         wal_locator=requirements.wal_locator,
         locator_map=locator_map,
         item_attributes=_json_copy(requirements.item_attributes),
@@ -1183,6 +2177,8 @@ class VerifiedAuthorityBootstrapPlan:
         "__setup_body_digest",
         "__descriptor_digest",
         "__pending_plan_commitment",
+        "__native_controller",
+        "__native_recovery",
     )
 
     def __init__(
@@ -1193,6 +2189,8 @@ class VerifiedAuthorityBootstrapPlan:
         observations: Mapping[str, object],
         *,
         recovery: bool,
+        native_controller: _NativeControllerSigner | None,
+        native_recovery: _NativeRecoveryCapability | None,
     ) -> None:
         if token is not _BOOTSTRAP_TOKEN:
             raise TypeError(
@@ -1207,6 +2205,8 @@ class VerifiedAuthorityBootstrapPlan:
         self.__setup_body_digest = bytes.fromhex(descriptor.setup_body_digest)
         self.__descriptor_digest = bytes.fromhex(descriptor.digest)
         self.__pending_plan_commitment = bytes.fromhex(final_plan["plan_digest"])
+        self.__native_controller = native_controller
+        self.__native_recovery = native_recovery
 
     @property
     def descriptor(self) -> AuthorityBootstrapDescriptor:
@@ -1262,6 +2262,24 @@ class VerifiedAuthorityBootstrapPlan:
             raise AuthorityError("authority bootstrap capability snapshot mismatch")
         self.__consumed = True
 
+    def _take_native_controller(self) -> _NativeControllerSigner:
+        controller = self.__native_controller
+        if controller is None:
+            raise CapabilityFailure(
+                "native bootstrap requires a bound pre-build controller"
+            )
+        self.__native_controller = None
+        return controller
+
+    def _take_native_recovery(self) -> _NativeRecoveryCapability:
+        recovery = self.__native_recovery
+        if recovery is None:
+            raise CapabilityFailure(
+                "native recovery requires an observed authorization reservation"
+            )
+        self.__native_recovery = None
+        return recovery
+
     def __reduce__(self):
         raise TypeError("VerifiedAuthorityBootstrapPlan is non-serializable")
 
@@ -1273,6 +2291,7 @@ def verify_authority_bootstrap(
     expected_installation_id: str,
     observations: Mapping[str, object],
     recovery: bool = False,
+    prepared_roles: NativeAuthorityPreparation | None = None,
 ) -> VerifiedAuthorityBootstrapPlan:
     plan = require_document(final_install_plan, "install-plan")
     if plan.get("installation_id") != expected_installation_id:
@@ -1305,12 +2324,34 @@ def verify_authority_bootstrap(
             raise AuthorityError(f"invalid observation for {locator}")
         if state == "present" and not recovery:
             raise AuthorityError(f"foreign fixed-locator collision at {locator}")
+    native_controller = (
+        None
+        if prepared_roles is None or recovery
+        else prepared_roles._bind(descriptor)
+    )
+    reservation = observations.get(
+        descriptor.locator_map["bootstrap_record"]
+    )
+    native_recovery = (
+        _NativeRecoveryCapability(
+            _NATIVE_RECOVERY_TOKEN,
+            final_plan=plan,
+            descriptor=descriptor.to_document(),
+            observations=observations,
+        )
+        if recovery
+        and isinstance(reservation, Mapping)
+        and reservation.get("state") == "present"
+        else None
+    )
     return VerifiedAuthorityBootstrapPlan(
         _BOOTSTRAP_TOKEN,
         plan,
         descriptor,
         observations,
         recovery=recovery,
+        native_controller=native_controller,
+        native_recovery=native_recovery,
     )
 
 

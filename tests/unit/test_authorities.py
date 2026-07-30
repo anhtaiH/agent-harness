@@ -8,12 +8,14 @@ import hmac
 import json
 import os
 from pathlib import Path
+import pickle
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import harness_core.auth as auth_module
 import harness_core.authorities as authorities_module
@@ -25,6 +27,7 @@ from harness_core.auth import (
 from harness_core.authorities import (
     AUTHORITY_BOOTSTRAP_CRASH_POINTS,
     APPROVAL_KEY_LOCATOR,
+    AuthorityBootstrapDescriptor,
     AuthorityBootstrapRequirements,
     AuthorityError,
     CapabilityFailure,
@@ -125,6 +128,123 @@ def complete_plan(wal_path: Path, body: SetupBodyV1 | None = None):
     return body, descriptor, plan
 
 
+class NativeControllerCapabilityTests(unittest.TestCase):
+    def test_transient_key_is_explicitly_nonpersistent(self):
+        class Bindings:
+            attr_key_type = 11
+            attr_key_size_in_bits = 12
+            attr_is_permanent = 13
+            key_type_ec_p256 = 14
+            cf_boolean_false = 15
+            dictionary_key_callbacks = 16
+            dictionary_value_callbacks = 17
+
+            def __init__(self):
+                self.dictionary_pairs = []
+                self.released = []
+
+            def cf_number_create(self, *_):
+                return 21
+
+            def cf_dictionary_create(
+                self,
+                _allocator,
+                keys,
+                values,
+                count,
+                _key_callbacks,
+                _value_callbacks,
+            ):
+                self.dictionary_pairs = list(
+                    zip(list(keys)[:count], list(values)[:count])
+                )
+                return 22
+
+            def sec_key_create_random_key(self, _attributes, _error):
+                return 23
+
+            def sec_key_copy_public_key(self, _private_key):
+                return 24
+
+            def sec_key_copy_external_representation(
+                self,
+                _public_key,
+                _error,
+            ):
+                return 25
+
+            def data_bytes(self, _data):
+                return b"\x04" + b"\x01" * 64
+
+            def release(self, value):
+                if value:
+                    self.released.append(value)
+
+        bindings = Bindings()
+        with patch.object(
+            authorities_module,
+            "_SecurityBindings",
+            return_value=bindings,
+        ):
+            key = authorities_module._TransientControllerKey.generate()
+        self.assertIn(
+            (bindings.attr_is_permanent, bindings.cf_boolean_false),
+            bindings.dictionary_pairs,
+        )
+        self.assertEqual(len(key.public_key_der), 91)
+        key.close()
+        self.assertEqual(bindings.released.count(23), 1)
+
+    def test_transient_key_failure_releases_and_consumes_private_ref(self):
+        class Bindings:
+            ecdsa_message_sha256 = 31
+
+            def __init__(self):
+                self.released = []
+
+            def data(self, _message):
+                return 32
+
+            def sec_key_create_signature(
+                self,
+                _private_key,
+                _algorithm,
+                _message,
+                _error,
+            ):
+                return None
+
+            def release(self, value):
+                if value:
+                    self.released.append(value)
+
+        bindings = Bindings()
+        key = authorities_module._TransientControllerKey(
+            bindings,
+            33,
+            b"\x30\x59" + b"\x00" * 89,
+        )
+        for operation in (
+            copy.copy,
+            copy.deepcopy,
+            pickle.dumps,
+            json.dumps,
+        ):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(TypeError):
+                    operation(key)
+        with self.assertRaisesRegex(
+            CapabilityFailure,
+            "signature failed",
+        ):
+            key.sign_and_destroy(b"authorization")
+        self.assertEqual(bindings.released.count(32), 1)
+        self.assertEqual(bindings.released.count(33), 1)
+        with self.assertRaisesRegex(CapabilityFailure, "already consumed"):
+            key.sign_and_destroy(b"authorization")
+        self.assertEqual(bindings.released.count(33), 1)
+
+
 class AuthorityBootstrapTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -163,6 +283,30 @@ class AuthorityBootstrapTests(unittest.TestCase):
             )
         self.assertEqual(self.backend.provision_calls, 0)
         self.assertFalse(self.wal.exists())
+
+    def test_serialized_descriptor_rejects_invalid_native_role_pins(self):
+        cases = {
+            "launcher-code-hash": (
+                "launcher_code_directory_hash",
+                "g" * 40,
+            ),
+            "broker-code-hash": (
+                "native_broker_code_directory_hash",
+                "e" * 39,
+            ),
+            "controller-key": (
+                "controller_public_key_digest",
+                "C" * 64,
+            ),
+            "provider": ("authority_provider", "caller-selected"),
+            "profile": ("verifier_mode", "debug"),
+        }
+        for case, (field, changed) in cases.items():
+            with self.subTest(case=case):
+                document = self.descriptor.to_document()
+                document[field] = changed
+                with self.assertRaises(AuthorityError):
+                    AuthorityBootstrapDescriptor.from_document(document)
 
     def test_setup_body_descriptor_and_final_plan_form_acyclic_hash_dag(self):
         self.assertEqual(self.descriptor.setup_body_digest, self.body.digest)
