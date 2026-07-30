@@ -27,7 +27,7 @@ mkdir -p "$WORK"
 step() { printf '\n== %s ==\n' "$1"; }
 
 step "1/5 syntax checks"
-python3 -m py_compile "$ROOT/src/agent_harness.py" "$ROOT"/runtime/hooks/*.py
+"$AGENT_HARNESS_PYTHON" -m py_compile "$ROOT/src/agent_harness.py" "$ROOT"/runtime/hooks/*.py
 node --check "$ROOT/runtime/mcp/server.mjs"
 node --check "$ROOT/runtime/mcp/opencode-plugin.mjs"
 for script in "$ROOT"/runtime/bin/ah-* "$ROOT/runtime/bin/env-scrub.sh" "$ROOT"/tests/*.sh; do
