@@ -188,14 +188,20 @@ npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --
 FAKE_HOME="$TMP_DIR/home"
 FAKE_BIN="$TMP_DIR/fake-bin"
 ADAPTER_RUNTIME="$TMP_DIR/runtime-adapters"
-mkdir -p "$FAKE_HOME" "$FAKE_BIN"
+POISON_CODEX_HOME="$TMP_DIR/poison-codex-home"
+mkdir -p "$FAKE_HOME" "$FAKE_BIN" "$POISON_CODEX_HOME"
+printf '%s' 'must remain the only file' > "$POISON_CODEX_HOME/sentinel"
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo codex-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/codex"
 printf '#!/usr/bin/env bash\nif [ "$1" = "mcp" ]; then exit 0; fi\ncase "$1" in --version) echo claude-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/claude"
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo cursor-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/cursor-agent"
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo opencode-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/opencode"
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo pi-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/pi"
 chmod +x "$FAKE_BIN/codex" "$FAKE_BIN/claude" "$FAKE_BIN/cursor-agent" "$FAKE_BIN/opencode" "$FAKE_BIN/pi"
-HOME="$FAKE_HOME" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" setup --workspace demo-adapters --repo "$REPO" --runtime-root "$ADAPTER_RUNTIME" --shim-dir "$TMP_DIR/bin-adapters" --yes --json >/dev/null
+env CODEX_HOME="$POISON_CODEX_HOME" /usr/bin/env HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" setup --workspace demo-adapters --repo "$REPO" --runtime-root "$ADAPTER_RUNTIME" --shim-dir "$TMP_DIR/bin-adapters" --yes --json >/dev/null
+if find "$POISON_CODEX_HOME" -mindepth 1 ! -name sentinel -print -quit | grep -q .; then
+  echo "adapter test escaped its fake Codex home" >&2
+  exit 1
+fi
 grep -q "Agent Harness" "$FAKE_HOME/.codex/AGENTS.md"
 grep -q "mcp_servers.demo-adapters-agent-harness" "$FAKE_HOME/.codex/config.toml"
 test -f "$FAKE_HOME/.codex/skills/agent-harness/task-packet/SKILL.md"
@@ -235,7 +241,7 @@ if git -C "$REPO" status --short | grep -E 'CLAUDE.local.md|\\.cursor/rules/agen
 fi
 # End-to-end gate check against the installed adapter runtime
 HOME="$FAKE_HOME" "$ROOT/bin/agent-harness" --runtime-root "$ADAPTER_RUNTIME" verify-gates --json | grep -q '"ok": true'
-HOME="$FAKE_HOME" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" --runtime-root "$ADAPTER_RUNTIME" uninstall --restore-adapters --json >/dev/null
+env CODEX_HOME="$POISON_CODEX_HOME" /usr/bin/env HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" --runtime-root "$ADAPTER_RUNTIME" uninstall --restore-adapters --json >/dev/null
 if grep -q "Agent Harness" "$FAKE_HOME/.codex/AGENTS.md"; then
   echo "Codex managed instructions should be removed on restore" >&2
   exit 1
