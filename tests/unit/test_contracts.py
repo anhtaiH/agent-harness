@@ -85,8 +85,10 @@ SCHEMA_REQUIRED_FIELDS = {
         "broker_signature",
     },
     "authority-manifest": {
-        "broker_code_identity",
-        "broker_content_digest",
+        "launcher_code_identity",
+        "launcher_content_digest",
+        "native_broker_code_identity",
+        "native_broker_content_digest",
         "approval_public_key_digest",
         "approval_persistent_reference",
         "anchor_backend_id",

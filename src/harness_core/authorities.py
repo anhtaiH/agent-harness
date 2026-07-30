@@ -123,8 +123,10 @@ class NativeAuthorityBackend:
         "__verified_manifest",
         "__executable_device",
         "__executable_inode",
-        "__content_digest",
-        "__code_identity",
+        "__launcher_content_digest",
+        "__launcher_code_identity",
+        "__native_broker_content_digest",
+        "__native_broker_code_identity",
     )
 
     def __init__(
@@ -152,12 +154,20 @@ class NativeAuthorityBackend:
         (
             self.__executable_device,
             self.__executable_inode,
-            self.__content_digest,
+            self.__launcher_content_digest,
         ) = self.__read_executable_witness()
-        self.__code_identity = str(attestation["code_identity"])
+        self.__launcher_code_identity = str(
+            attestation["launcher_code_identity"]
+        )
+        self.__native_broker_content_digest = str(
+            attestation["native_broker_content_digest"]
+        )
+        self.__native_broker_code_identity = str(
+            attestation["native_broker_code_identity"]
+        )
         if not hmac.compare_digest(
-            self.__content_digest,
-            str(attestation["content_digest"]),
+            self.__launcher_content_digest,
+            str(attestation["launcher_content_digest"]),
         ):
             raise CapabilityFailure("native authority changed after attestation")
 
@@ -167,7 +177,7 @@ class NativeAuthorityBackend:
 
     @property
     def code_identity(self) -> str:
-        return self.__attestation["code_identity"]
+        return self.__native_broker_code_identity
 
     @property
     def approval_public_key_digest(self) -> str:
@@ -210,7 +220,9 @@ class NativeAuthorityBackend:
         if (
             device != self.__executable_device
             or inode != self.__executable_inode
-            or not hmac.compare_digest(digest, self.__content_digest)
+            or not hmac.compare_digest(
+                digest, self.__launcher_content_digest
+            )
         ):
             raise CapabilityFailure("native authority changed after attestation")
 
@@ -238,10 +250,17 @@ class NativeAuthorityBackend:
             not isinstance(attestation, dict)
             or attestation.get("protocol_version") != 1
             or not hmac.compare_digest(
-                str(attestation.get("content_digest")),
-                self.__content_digest,
+                str(attestation.get("launcher_content_digest")),
+                self.__launcher_content_digest,
             )
-            or attestation.get("code_identity") != self.__code_identity
+            or attestation.get("launcher_code_identity")
+            != self.__launcher_code_identity
+            or not hmac.compare_digest(
+                str(attestation.get("native_broker_content_digest")),
+                self.__native_broker_content_digest,
+            )
+            or attestation.get("native_broker_code_identity")
+            != self.__native_broker_code_identity
         ):
             raise CapabilityFailure("native authority attestation mismatch")
 
@@ -251,7 +270,7 @@ class NativeAuthorityBackend:
         value: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         request_value = None if value is None else _json_copy(value)
-        environment = {**os.environ, **self.__environment}
+        environment = dict(self.__environment)
         self.__verify_current_attestation(environment)
         self.__revalidate_executable()
         inherited: tuple[int, ...] = ()
@@ -499,7 +518,7 @@ def _attest_native_executable(
         [str(resolved), "--attest"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={**os.environ, **environment},
+        env=environment,
         timeout=30,
     )
     if probe.returncode != 0:
@@ -514,8 +533,12 @@ def _attest_native_executable(
     if (
         not isinstance(attestation, dict)
         or attestation.get("protocol_version") != 1
-        or attestation.get("content_digest") != content_digest
-        or not isinstance(attestation.get("code_identity"), str)
+        or attestation.get("launcher_content_digest") != content_digest
+        or not isinstance(attestation.get("launcher_code_identity"), str)
+        or not isinstance(
+            attestation.get("native_broker_content_digest"), str
+        )
+        or not isinstance(attestation.get("native_broker_code_identity"), str)
     ):
         raise CapabilityFailure("native authority attestation mismatch")
     if hashlib.sha256(resolved.read_bytes()).hexdigest() != content_digest:
@@ -532,6 +555,7 @@ def open_test_native_authority_backend(
     if not isinstance(transition_secret, bytes) or not transition_secret:
         raise ValueError("test transition secret must be non-empty bytes")
     environment = {
+        **os.environ,
         "AGENT_HARNESS_FAKE_NATIVE_STATE": str(Path(state_path).resolve()),
         "AGENT_HARNESS_FAKE_TRANSITION_KEY": transition_secret.hex(),
         "AGENT_HARNESS_FAKE_USER_PRESENCE": "approved",
@@ -568,20 +592,28 @@ def open_native_authority_backend(
         raise CapabilityFailure(
             "trusted bootstrap helper locator must be absolute"
         )
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
     resolved, content_digest, attestation = _attest_native_executable(
-        executable, environment={}
+        executable, environment=environment
     )
     if (
         not hmac.compare_digest(
-            content_digest, descriptor.broker_content_digest
+            content_digest, descriptor.launcher_content_digest
         )
-        or attestation["code_identity"] != descriptor.broker_code_identity
+        or attestation["launcher_code_identity"]
+        != descriptor.launcher_code_identity
+        or not hmac.compare_digest(
+            attestation["native_broker_content_digest"],
+            descriptor.native_broker_content_digest,
+        )
+        or attestation["native_broker_code_identity"]
+        != descriptor.native_broker_code_identity
     ):
         raise CapabilityFailure("native authority pinned identity mismatch")
     return NativeAuthorityBackend(
         _NATIVE_BACKEND_TOKEN,
         resolved,
-        {},
+        environment,
         attestation,
         qualifying=False,
         bootstrap_capability=plan._native_bootstrap_secret(),
@@ -741,8 +773,10 @@ def _default_item_attributes() -> dict[str, object]:
 class AuthorityBootstrapRequirements:
     installation_id: str
     creator_id: str
-    broker_code_identity: str
-    broker_content_digest: str
+    launcher_code_identity: str
+    launcher_content_digest: str
+    native_broker_code_identity: str
+    native_broker_content_digest: str
     wal_locator: str
     initial_anchor_namespace: str
     initial_anchor_generation: int
@@ -785,8 +819,10 @@ class AuthorityBootstrapDescriptor:
     installation_id: str
     creator_id: str
     broker_locator: str
-    broker_code_identity: str
-    broker_content_digest: str
+    launcher_code_identity: str
+    launcher_content_digest: str
+    native_broker_code_identity: str
+    native_broker_content_digest: str
     wal_locator: str
     locator_map: Mapping[str, str]
     item_attributes: Mapping[str, object]
@@ -806,8 +842,11 @@ class AuthorityBootstrapDescriptor:
             "installation_id": self.installation_id,
             "creator_id": self.creator_id,
             "broker_locator": self.broker_locator,
-            "broker_code_identity": self.broker_code_identity,
-            "broker_content_digest": self.broker_content_digest,
+            "launcher_code_identity": self.launcher_code_identity,
+            "launcher_content_digest": self.launcher_content_digest,
+            "native_broker_code_identity": self.native_broker_code_identity,
+            "native_broker_content_digest":
+                self.native_broker_content_digest,
             "wal_locator": self.wal_locator,
             "locators": _json_copy(self.locator_map),
             "item_attributes": _json_copy(self.item_attributes),
@@ -833,8 +872,10 @@ class AuthorityBootstrapDescriptor:
             "installation_id",
             "creator_id",
             "broker_locator",
-            "broker_code_identity",
-            "broker_content_digest",
+            "launcher_code_identity",
+            "launcher_content_digest",
+            "native_broker_code_identity",
+            "native_broker_content_digest",
             "wal_locator",
             "locators",
             "item_attributes",
@@ -863,8 +904,12 @@ class AuthorityBootstrapDescriptor:
             installation_id=value["installation_id"],
             creator_id=value["creator_id"],
             broker_locator=value["broker_locator"],
-            broker_code_identity=value["broker_code_identity"],
-            broker_content_digest=value["broker_content_digest"],
+            launcher_code_identity=value["launcher_code_identity"],
+            launcher_content_digest=value["launcher_content_digest"],
+            native_broker_code_identity=value["native_broker_code_identity"],
+            native_broker_content_digest=value[
+                "native_broker_content_digest"
+            ],
             wal_locator=value["wal_locator"],
             locator_map=dict(locators),
             item_attributes=value["item_attributes"],
@@ -910,8 +955,11 @@ def plan_authority_bootstrap(
         installation_id=requirements.installation_id,
         creator_id=requirements.creator_id,
         broker_locator=requirements.broker_locator,
-        broker_code_identity=requirements.broker_code_identity,
-        broker_content_digest=requirements.broker_content_digest,
+        launcher_code_identity=requirements.launcher_code_identity,
+        launcher_content_digest=requirements.launcher_content_digest,
+        native_broker_code_identity=requirements.native_broker_code_identity,
+        native_broker_content_digest=
+            requirements.native_broker_content_digest,
         wal_locator=requirements.wal_locator,
         locator_map=locator_map,
         item_attributes=_json_copy(requirements.item_attributes),
@@ -1204,7 +1252,7 @@ def _read_wal(
         "bootstrap_digest": descriptor.digest,
         "pending_plan_commitment": plan.pending_plan_commitment,
         "wal_locator": descriptor.wal_locator,
-        "broker_code_identity": descriptor.broker_code_identity,
+        "broker_code_identity": descriptor.native_broker_code_identity,
     }
     if any(document.get(name) != value for name, value in expected.items()):
         raise AuthorityError("authority bootstrap WAL binding mismatch")
@@ -1220,7 +1268,7 @@ def _markers(
     return {
         "installation_id": descriptor.installation_id,
         "creator_id": descriptor.creator_id,
-        "broker_code_identity": descriptor.broker_code_identity,
+        "broker_code_identity": descriptor.native_broker_code_identity,
         "bootstrap_digest": descriptor.digest,
         "wal_digest": wal_digest,
     }
@@ -1285,7 +1333,12 @@ def _item_values(
                 **markers,
                 "purpose": "authority-bootstrap-record",
                 "attributes": descriptor.item_attributes["bootstrap_record"],
-                "broker_content_digest": descriptor.broker_content_digest,
+                "launcher_code_identity": descriptor.launcher_code_identity,
+                "launcher_content_digest": descriptor.launcher_content_digest,
+                "native_broker_code_identity":
+                    descriptor.native_broker_code_identity,
+                "native_broker_content_digest":
+                    descriptor.native_broker_content_digest,
                 "locators": descriptor.to_document()["locators"],
             },
         ),
@@ -1301,8 +1354,12 @@ def _manifest(
         "schema_version": 1,
         "created_at": plan.final_plan["created_at"],
         "installation_id": descriptor.installation_id,
-        "broker_code_identity": descriptor.broker_code_identity,
-        "broker_content_digest": descriptor.broker_content_digest,
+        "launcher_code_identity": descriptor.launcher_code_identity,
+        "launcher_content_digest": descriptor.launcher_content_digest,
+        "native_broker_code_identity":
+            descriptor.native_broker_code_identity,
+        "native_broker_content_digest":
+            descriptor.native_broker_content_digest,
         "approval_public_key_digest": backend.approval_public_key_digest,
         "approval_persistent_reference": "opaque:approval-key",
         "anchor_backend_id": "native-keychain-anchor-v1",
@@ -1338,6 +1395,8 @@ def _native_bootstrap_request(
         "descriptor_digest": descriptor.digest,
         "final_plan_digest": plan.pending_plan_commitment,
         "final_plan": plan.final_plan,
+        "launcher_code_identity": descriptor.launcher_code_identity,
+        "launcher_content_digest": descriptor.launcher_content_digest,
         "wal_digest": wal["wal_digest"],
         "anchor_namespace": descriptor.initial_anchor_namespace,
         "initial_anchor_generation": descriptor.initial_anchor_generation,
@@ -1358,8 +1417,12 @@ def _verified_native_manifest(
         "schema_version": 1,
         "created_at": plan.final_plan["created_at"],
         "installation_id": descriptor.installation_id,
-        "broker_code_identity": descriptor.broker_code_identity,
-        "broker_content_digest": descriptor.broker_content_digest,
+        "launcher_code_identity": descriptor.launcher_code_identity,
+        "launcher_content_digest": descriptor.launcher_content_digest,
+        "native_broker_code_identity":
+            descriptor.native_broker_code_identity,
+        "native_broker_content_digest":
+            descriptor.native_broker_content_digest,
         "anchor_namespace": descriptor.initial_anchor_namespace,
         "integrity_key_locator": descriptor.locator_map["integrity_key"],
         "terminal_pin_locator": descriptor.locator_map["terminal_pin"],
@@ -1456,7 +1519,7 @@ def _provision_locked(
 ) -> dict[str, object]:
     descriptor = plan.descriptor
     wal_path = Path(descriptor.wal_locator)
-    if backend.code_identity != descriptor.broker_code_identity:
+    if backend.code_identity != descriptor.native_broker_code_identity:
         raise CapabilityFailure("native broker code identity drift")
 
     if wal_path.exists():
@@ -1472,7 +1535,7 @@ def _provision_locked(
             "bootstrap_digest": descriptor.digest,
             "pending_plan_commitment": plan.pending_plan_commitment,
             "wal_locator": descriptor.wal_locator,
-            "broker_code_identity": descriptor.broker_code_identity,
+            "broker_code_identity": descriptor.native_broker_code_identity,
             "locators": descriptor.to_document()["locators"],
             "item_attributes": descriptor.to_document()["item_attributes"],
             "conditional_inverses": descriptor.to_document()[

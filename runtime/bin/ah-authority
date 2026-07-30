@@ -1,12 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/ah-authority-self-test.XXXXXX")"
+  WORK="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ah-authority-self-test.XXXXXX")"
   cleanup() {
-    rm -rf "$WORK"
+    /bin/rm -rf "$WORK"
   }
   trap cleanup EXIT
   SWIFTC="$(/usr/bin/xcrun --find swiftc)"
@@ -30,15 +31,15 @@ canonical_path() {
   while [ -L "$target" ]; do
     [ "$remaining" -gt 0 ] || return 1
     remaining=$((remaining - 1))
-    link="$(readlink "$target")"
+    link="$(/usr/bin/readlink "$target")"
     case "$link" in
       /*) target="$link" ;;
-      *) target="$(dirname "$target")/$link" ;;
+      *) target="$(/usr/bin/dirname "$target")/$link" ;;
     esac
   done
   printf '%s/%s\n' \
-    "$(cd "$(dirname "$target")" && pwd -P)" \
-    "$(basename "$target")"
+    "$(cd "$(/usr/bin/dirname "$target")" && pwd -P)" \
+    "$(/usr/bin/basename "$target")"
 }
 
 authority_error() {
@@ -195,23 +196,37 @@ cache_is_valid() {
 
 LOCK_HELD=0
 BUILD_WORK=""
+release_cache_lock() {
+  local metadata
+  local owner_pid
+  [ "$LOCK_HELD" -eq 1 ] || return 0
+  [ ! -L "$CACHE_LOCK" ] || return 1
+  metadata="$(/usr/bin/stat -f '%HT|%u|%Lp' "$CACHE_LOCK")" || return 1
+  [ "$metadata" = "Regular File|$CURRENT_UID|600" ] || return 1
+  owner_pid="$(/bin/cat "$CACHE_LOCK")" || return 1
+  [ "$owner_pid" = "$$" ] || return 1
+  /bin/rm -f "$CACHE_LOCK"
+}
+
 cleanup_build() {
   if [ -n "$BUILD_WORK" ] && [ -d "$BUILD_WORK" ]; then
     /bin/rm -rf "$BUILD_WORK"
   fi
   if [ "$LOCK_HELD" -eq 1 ]; then
-    /bin/rmdir "$CACHE_LOCK" 2>/dev/null || true
+    release_cache_lock 2>/dev/null || true
   fi
 }
 trap cleanup_build EXIT HUP INT TERM
 
-/bin/mkdir "$CACHE_LOCK" 2>/dev/null ||
+/usr/bin/shlock -f "$CACHE_LOCK" -p "$$" 2>/dev/null ||
   authority_error "native authority cache is locked"
 LOCK_HELD=1
-/bin/chmod 700 "$CACHE_LOCK"
+/bin/chmod 600 "$CACHE_LOCK"
 LOCK_METADATA="$(/usr/bin/stat -f '%HT|%u|%Lp' "$CACHE_LOCK")"
-[ "$LOCK_METADATA" = "Directory|$CURRENT_UID|700" ] ||
+[ "$LOCK_METADATA" = "Regular File|$CURRENT_UID|600" ] ||
   authority_error "native authority cache lock metadata mismatch"
+[ "$(/bin/cat "$CACHE_LOCK")" = "$$" ] ||
+  authority_error "native authority cache lock owner mismatch"
 
 if ! cache_is_valid; then
   BUILD_WORK="$(/usr/bin/mktemp -d "$CACHE_ROOT/.build.XXXXXX")" ||
@@ -228,10 +243,10 @@ if ! cache_is_valid; then
   CANDIDATE_ATTESTATION="$("$CANDIDATE" --attest)" ||
     authority_error "compiled native authority attestation failed"
   CANDIDATE_IDENTITY="$(printf '%s' "$CANDIDATE_ATTESTATION" |
-    /usr/bin/plutil -extract code_identity raw -o - -- -)" ||
+    /usr/bin/plutil -extract native_broker_code_identity raw -o - -- -)" ||
     authority_error "compiled native authority code identity unavailable"
   CANDIDATE_SELF_DIGEST="$(printf '%s' "$CANDIDATE_ATTESTATION" |
-    /usr/bin/plutil -extract content_digest raw -o - -- -)" ||
+    /usr/bin/plutil -extract native_broker_content_digest raw -o - -- -)" ||
     authority_error "compiled native authority digest unavailable"
   [ "$CANDIDATE_SELF_DIGEST" = "$CANDIDATE_DIGEST" ] ||
     authority_error "compiled native authority self-digest mismatch"
@@ -254,7 +269,7 @@ if [ -n "$BUILD_WORK" ]; then
   /bin/rm -rf "$BUILD_WORK"
 fi
 BUILD_WORK=""
-/bin/rmdir "$CACHE_LOCK" ||
+release_cache_lock ||
   authority_error "native authority cache unlock failed"
 LOCK_HELD=0
 trap - EXIT HUP INT TERM
@@ -264,10 +279,10 @@ cache_is_valid ||
 ATTESTATION="$("$CACHE_BINARY" --attest)" ||
   authority_error "native authority attestation failed"
 ACTUAL_IDENTITY="$(printf '%s' "$ATTESTATION" |
-  /usr/bin/plutil -extract code_identity raw -o - -- -)" ||
+  /usr/bin/plutil -extract native_broker_code_identity raw -o - -- -)" ||
   authority_error "native authority code identity unavailable"
 ATTESTED_DIGEST="$(printf '%s' "$ATTESTATION" |
-  /usr/bin/plutil -extract content_digest raw -o - -- -)" ||
+  /usr/bin/plutil -extract native_broker_content_digest raw -o - -- -)" ||
   authority_error "native authority digest unavailable"
 EXPECTED_DIGEST="$(/usr/bin/sed -n '2p' "$CACHE_MANIFEST")"
 EXPECTED_IDENTITY="$(/usr/bin/sed -n '3p' "$CACHE_MANIFEST")"
@@ -280,7 +295,10 @@ cache_is_valid ||
 
 if [ "${1:-}" = "--attest" ] && [ "$#" -eq 1 ]; then
   printf '%s' "$ATTESTATION" |
-    /usr/bin/plutil -replace content_digest -string "$WRAPPER_DIGEST" -o - -- - |
+    /usr/bin/plutil -replace launcher_code_identity \
+      -string "sha256:$WRAPPER_DIGEST" -o - -- - |
+    /usr/bin/plutil -replace launcher_content_digest \
+      -string "$WRAPPER_DIGEST" -o - -- - |
     /usr/bin/plutil -convert json -o - -- -
   exit 0
 fi

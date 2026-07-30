@@ -80,6 +80,8 @@ struct BootstrapRequest: Codable {
     let descriptorDigest: String
     let finalPlanDigest: String
     let finalPlan: [String: JSONValue]
+    let launcherCodeIdentity: String
+    let launcherContentDigest: String
     let walDigest: String
     let anchorNamespace: String
     let initialAnchorGeneration: Int
@@ -109,8 +111,10 @@ struct BootstrapManifest: Encodable {
     let schemaVersion: Int
     let createdAt: String
     let installationId: String
-    let brokerCodeIdentity: String
-    let brokerContentDigest: String
+    let launcherCodeIdentity: String
+    let launcherContentDigest: String
+    let nativeBrokerCodeIdentity: String
+    let nativeBrokerContentDigest: String
     let approvalPublicKeyDigest: String
     let approvalPersistentReference: String
     let anchorBackendId: String
@@ -131,8 +135,10 @@ struct BootstrapManifest: Encodable {
 
 struct BrokerAttestation: Encodable {
     let protocolVersion: Int
-    let codeIdentity: String
-    let contentDigest: String
+    let launcherCodeIdentity: String
+    let launcherContentDigest: String
+    let nativeBrokerCodeIdentity: String
+    let nativeBrokerContentDigest: String
 }
 
 struct AnchorReadRequest: Decodable {
@@ -354,6 +360,8 @@ func authenticatedBootstrapRequest(
         "descriptor_digest",
         "final_plan_digest",
         "final_plan",
+        "launcher_code_identity",
+        "launcher_content_digest",
         "wal_digest",
         "anchor_namespace",
         "initial_anchor_generation",
@@ -472,10 +480,13 @@ func brokerAttestation() throws -> BrokerAttestation {
             "serialize broker designated requirement", status
         )
     }
+    let codeIdentity = "designated:\(requirementText)"
     return BrokerAttestation(
         protocolVersion: 1,
-        codeIdentity: "designated:\(requirementText)",
-        contentDigest: contentDigest
+        launcherCodeIdentity: codeIdentity,
+        launcherContentDigest: contentDigest,
+        nativeBrokerCodeIdentity: codeIdentity,
+        nativeBrokerContentDigest: contentDigest
     )
 }
 
@@ -888,8 +899,10 @@ func validateBootstrapPlan(
         "installation_id",
         "creator_id",
         "broker_locator",
-        "broker_code_identity",
-        "broker_content_digest",
+        "launcher_code_identity",
+        "launcher_content_digest",
+        "native_broker_code_identity",
+        "native_broker_content_digest",
         "wal_locator",
         "locators",
         "item_attributes",
@@ -903,10 +916,15 @@ func validateBootstrapPlan(
           descriptor["creator_id"] as? String == request.creatorId,
           let brokerLocator = descriptor["broker_locator"] as? String,
           brokerLocator.hasPrefix("/"),
-          descriptor["broker_code_identity"] as? String
-              == attestation.codeIdentity,
-          descriptor["broker_content_digest"] as? String
-              == attestation.contentDigest,
+          !request.launcherCodeIdentity.isEmpty,
+          descriptor["launcher_code_identity"] as? String
+              == request.launcherCodeIdentity,
+          descriptor["launcher_content_digest"] as? String
+              == request.launcherContentDigest,
+          descriptor["native_broker_code_identity"] as? String
+              == attestation.nativeBrokerCodeIdentity,
+          descriptor["native_broker_content_digest"] as? String
+              == attestation.nativeBrokerContentDigest,
           let walLocator = descriptor["wal_locator"] as? String,
           walLocator.hasPrefix("/"),
           let locators = descriptor["locators"] as? [String: Any],
@@ -1043,8 +1061,11 @@ func validateBootstrapPlan(
         "descriptor_digest": descriptorDigest,
         "final_plan_digest": planDigest,
         "wal_digest": request.walDigest,
-        "broker_code_identity": attestation.codeIdentity,
-        "broker_content_digest": attestation.contentDigest,
+        "launcher_code_identity": request.launcherCodeIdentity,
+        "launcher_content_digest": request.launcherContentDigest,
+        "native_broker_code_identity": attestation.nativeBrokerCodeIdentity,
+        "native_broker_content_digest":
+            attestation.nativeBrokerContentDigest,
     ])
 }
 
@@ -1203,7 +1224,8 @@ func requireTransitionAuthorization(_ request: AnchorCASRequest) throws {
         try requireHexDigest(value, field: field)
     }
     let attestation = try brokerAttestation()
-    guard request.brokerCodeIdentity == attestation.codeIdentity else {
+    guard request.brokerCodeIdentity
+            == attestation.nativeBrokerCodeIdentity else {
         throw BrokerFailure.capability(
             "authenticated anchor transition required"
         )
@@ -1511,6 +1533,9 @@ func bootstrap(
     }
     try requireHexDigest(request.descriptorDigest, field: "descriptorDigest")
     try requireHexDigest(request.finalPlanDigest, field: "finalPlanDigest")
+    try requireHexDigest(
+        request.launcherContentDigest, field: "launcherContentDigest"
+    )
     try requireHexDigest(request.walDigest, field: "walDigest")
     try requireHexDigest(
         request.initialAnchorCommitment, field: "initialAnchorCommitment"
@@ -1535,14 +1560,14 @@ func bootstrap(
         installationId,
         request.descriptorDigest,
         request.walDigest,
-        attestation.codeIdentity,
+        attestation.nativeBrokerCodeIdentity,
     ].joined(separator: ":")
     let integrityMarker = [
         "integrity-key",
         installationId,
         request.descriptorDigest,
         request.walDigest,
-        attestation.codeIdentity,
+        attestation.nativeBrokerCodeIdentity,
     ].joined(separator: ":")
 
     return try withAuthorityLock {
@@ -1605,8 +1630,12 @@ func bootstrap(
             withJSONObject: [
                 "installation_id": installationId,
                 "creator_id": request.creatorId,
-                "broker_code_identity": attestation.codeIdentity,
-                "broker_content_digest": attestation.contentDigest,
+                "launcher_code_identity": request.launcherCodeIdentity,
+                "launcher_content_digest": request.launcherContentDigest,
+                "native_broker_code_identity":
+                    attestation.nativeBrokerCodeIdentity,
+                "native_broker_content_digest":
+                    attestation.nativeBrokerContentDigest,
                 "descriptor_digest": request.descriptorDigest,
                 "final_plan_digest": request.finalPlanDigest,
                 "wal_digest": request.walDigest,
@@ -1678,8 +1707,11 @@ func bootstrap(
             schemaVersion: 1,
             createdAt: request.createdAt,
             installationId: installationId,
-            brokerCodeIdentity: attestation.codeIdentity,
-            brokerContentDigest: attestation.contentDigest,
+            launcherCodeIdentity: request.launcherCodeIdentity,
+            launcherContentDigest: request.launcherContentDigest,
+            nativeBrokerCodeIdentity: attestation.nativeBrokerCodeIdentity,
+            nativeBrokerContentDigest:
+                attestation.nativeBrokerContentDigest,
             approvalPublicKeyDigest: approval.publicDigest,
             approvalPersistentReference: approval.persistentReference,
             anchorBackendId: "native-keychain-anchor-v1",
@@ -1727,8 +1759,10 @@ func bootstrap(
             schemaVersion: unsigned.schemaVersion,
             createdAt: unsigned.createdAt,
             installationId: unsigned.installationId,
-            brokerCodeIdentity: unsigned.brokerCodeIdentity,
-            brokerContentDigest: unsigned.brokerContentDigest,
+            launcherCodeIdentity: unsigned.launcherCodeIdentity,
+            launcherContentDigest: unsigned.launcherContentDigest,
+            nativeBrokerCodeIdentity: unsigned.nativeBrokerCodeIdentity,
+            nativeBrokerContentDigest: unsigned.nativeBrokerContentDigest,
             approvalPublicKeyDigest: unsigned.approvalPublicKeyDigest,
             approvalPersistentReference: unsigned.approvalPersistentReference,
             anchorBackendId: unsigned.anchorBackendId,
@@ -1820,13 +1854,17 @@ func selfTest() throws {
     guard sha256(sample).count == 64 else {
         throw BrokerFailure.capability("SHA-256 unavailable")
     }
+    let selfTestLauncherDigest = String(repeating: "a", count: 64)
+    let selfTestNativeDigest = String(repeating: "0", count: 64)
     let manifest = BootstrapManifest(
         schema: "agent-harness/authority-manifest",
         schemaVersion: 1,
         createdAt: "2000-01-01T00:00:00Z",
         installationId: "00000000-0000-4000-8000-000000000000",
-        brokerCodeIdentity: "self-test",
-        brokerContentDigest: String(repeating: "0", count: 64),
+        launcherCodeIdentity: "sha256:\(selfTestLauncherDigest)",
+        launcherContentDigest: selfTestLauncherDigest,
+        nativeBrokerCodeIdentity: "self-test-native",
+        nativeBrokerContentDigest: selfTestNativeDigest,
         approvalPublicKeyDigest: String(repeating: "1", count: 64),
         approvalPersistentReference: "opaque:self-test-approval",
         anchorBackendId: "native-keychain-anchor-v1",
@@ -1864,6 +1902,11 @@ func selfTest() throws {
               == FixedLocator.terminalPin,
           manifestObject["integrity_key_locator"] as? String
               == FixedLocator.integrityKey,
+          manifestObject["launcher_content_digest"] as? String
+              == selfTestLauncherDigest,
+          manifestObject["native_broker_content_digest"] as? String
+              == selfTestNativeDigest,
+          selfTestLauncherDigest != selfTestNativeDigest,
           manifestObject["broker_signature"] == nil else {
         throw BrokerFailure.capability(
             "authority bootstrap manifest contract is invalid"
@@ -1899,6 +1942,7 @@ func selfTest() throws {
                 authenticating: phasePayload,
                 using: phaseKey
             ),
+        "launcher_native_binding_valid": true,
         "manifest_contract_valid": true,
         "keychain_mutated": false,
         "user_presence_requested": false,
@@ -1940,8 +1984,8 @@ do {
         var evaluationError: NSError?
         let response = HealthResponse(
             healthy: true,
-            codeIdentity: attestation.codeIdentity,
-            contentDigest: attestation.contentDigest,
+            codeIdentity: attestation.nativeBrokerCodeIdentity,
+            contentDigest: attestation.nativeBrokerContentDigest,
             approvalPublicKeyDigest: try publicKeyDigest(
                 locator: FixedLocator.approvalKey
             ),

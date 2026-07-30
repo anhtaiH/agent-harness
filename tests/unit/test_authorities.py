@@ -105,8 +105,10 @@ def requirements(wal_path: Path, **changes: object) -> AuthorityBootstrapRequire
     values: dict[str, object] = {
         "installation_id": INSTALLATION_ID,
         "creator_id": CREATOR_ID,
-        "broker_code_identity": BROKER_CODE_IDENTITY,
-        "broker_content_digest": BROKER_CONTENT_DIGEST,
+        "launcher_code_identity": BROKER_CODE_IDENTITY,
+        "launcher_content_digest": BROKER_CONTENT_DIGEST,
+        "native_broker_code_identity": BROKER_CODE_IDENTITY,
+        "native_broker_content_digest": BROKER_CONTENT_DIGEST,
         "wal_locator": str(wal_path),
         "initial_anchor_namespace": NAMESPACE,
         "initial_anchor_generation": 0,
@@ -732,8 +734,12 @@ class AuthorityBootstrapTests(unittest.TestCase):
             body.digest,
             requirements(
                 self.root / "fake-native-plan.wal",
-                broker_code_identity=backend.code_identity,
-                broker_content_digest=hashlib.sha256(
+                launcher_code_identity=backend.code_identity,
+                launcher_content_digest=hashlib.sha256(
+                    fake.read_bytes()
+                ).hexdigest(),
+                native_broker_code_identity=backend.code_identity,
+                native_broker_content_digest=hashlib.sha256(
                     fake.read_bytes()
                 ).hexdigest(),
             ),

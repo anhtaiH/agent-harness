@@ -94,10 +94,14 @@ print(json.dumps({{
                 requirements(
                     wal,
                     broker_locator=str(helper),
-                    broker_content_digest=hashlib.sha256(
+                    launcher_content_digest=hashlib.sha256(
                         helper.read_bytes()
                     ).hexdigest(),
-                    broker_code_identity="test-native-code-v1",
+                    launcher_code_identity="test-native-code-v1",
+                    native_broker_content_digest=hashlib.sha256(
+                        helper.read_bytes()
+                    ).hexdigest(),
+                    native_broker_code_identity="test-native-code-v1",
                 ),
             )
             plan = build_final_install_plan(
@@ -114,47 +118,43 @@ print(json.dumps({{
                 expected_installation_id=INSTALLATION_ID,
                 observations=observations,
             )
-            environment = {
-                "AGENT_HARNESS_FAKE_NATIVE_STATE": str(state),
-                "AGENT_HARNESS_FAKE_TRANSITION_KEY": (
-                    b"qualified-native-transition-key".hex()
+            backend = open_test_native_authority_backend(
+                helper,
+                state_path=state,
+                transition_secret=b"qualified-native-transition-key",
+            )
+            bootstrap_authority(
+                verified,
+                backend,
+                interaction=protected_interaction_for_test(
+                    origin="local-cli",
+                    stdin_is_tty=True,
+                    user_presence=True,
                 ),
-                "AGENT_HARNESS_FAKE_USER_PRESENCE": "approved",
-            }
-            with patch.dict(os.environ, environment):
-                backend = open_native_authority_backend(verified)
-                bootstrap_authority(
-                    verified,
-                    backend,
-                    interaction=protected_interaction_for_test(
-                        origin="local-cli",
-                        stdin_is_tty=True,
-                        user_presence=True,
-                    ),
-                )
-                self.assertTrue(backend.qualifying)
+            )
+            self.assertFalse(backend.qualifying)
 
-                replacement = Path(directory) / "replacement"
-                marker = Path(directory) / "replacement-ran"
-                replacement.write_text(
-                    "#!/bin/sh\n"
-                    f": > {marker}\n"
-                    "printf '{\"healthy\":true}\\n'\n"
-                )
-                replacement.chmod(0o700)
-                os.replace(replacement, helper)
+            replacement = Path(directory) / "replacement"
+            marker = Path(directory) / "replacement-ran"
+            replacement.write_text(
+                "#!/bin/sh\n"
+                f": > {marker}\n"
+                "printf '{\"healthy\":true}\\n'\n"
+            )
+            replacement.chmod(0o700)
+            os.replace(replacement, helper)
 
-                with self.assertRaisesRegex(
-                    CapabilityFailure,
-                    "native authority changed after attestation",
-                ):
-                    try:
-                        backend.health()
-                    finally:
-                        self.assertFalse(
-                            marker.exists(),
-                            "replacement helper executed before revalidation",
-                        )
+            with self.assertRaisesRegex(
+                CapabilityFailure,
+                "native authority changed after attestation",
+            ):
+                try:
+                    backend.health()
+                finally:
+                    self.assertFalse(
+                        marker.exists(),
+                        "replacement helper executed before revalidation",
+                    )
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS native broker")
     def test_authority_wrapper_never_executes_poisoned_cached_binary(self):
@@ -229,9 +229,245 @@ print(json.dumps({{
             for result in (first, second):
                 attestation = json.loads(result.stdout)
                 self.assertNotEqual(
-                    attestation["code_identity"],
+                    attestation["native_broker_code_identity"],
                     "cache-poison",
                 )
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS native broker")
+    def test_authority_wrapper_never_executes_caller_path_tools(self):
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            case_root = Path(directory).resolve()
+            wrapper = case_root / "runtime/bin/ah-authority"
+            source = case_root / "runtime/authority/macos-broker.swift"
+            wrapper.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            wrapper.write_bytes(
+                (root / "runtime/bin/ah-authority").read_bytes()
+            )
+            wrapper.chmod(0o700)
+            source.write_bytes(
+                (root / "runtime/authority/macos-broker.swift").read_bytes()
+            )
+
+            prewarm = subprocess.run(
+                [wrapper, "--attest"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ,
+                timeout=180,
+            )
+            self.assertEqual(prewarm.returncode, 0, prewarm.stderr)
+
+            poison_path = case_root / "caller-path"
+            poison_path.mkdir()
+            marker = case_root / "caller-path-ran"
+            for name in (
+                "bash",
+                "dirname",
+                "readlink",
+                "basename",
+                "xcrun",
+                "shasum",
+                "stat",
+                "awk",
+            ):
+                tool = poison_path / name
+                tool.write_text(
+                    "#!/bin/sh\n"
+                    f"/usr/bin/printf '%s\\n' '{name}' >> '{marker}'\n"
+                    "exit 97\n"
+                )
+                tool.chmod(0o700)
+
+            result = subprocess.run(
+                [wrapper, "--attest"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={**os.environ, "PATH": str(poison_path)},
+                timeout=60,
+            )
+
+            self.assertFalse(
+                marker.exists(),
+                "wrapper executed caller PATH tool: "
+                + (marker.read_text() if marker.exists() else ""),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS native broker")
+    def test_real_wrapper_attestation_separates_launcher_and_native_broker(
+        self,
+    ):
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            case_root = Path(directory).resolve()
+            wrapper = case_root / "runtime/bin/ah-authority"
+            source = case_root / "runtime/authority/macos-broker.swift"
+            wrapper.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            wrapper.write_bytes(
+                (root / "runtime/bin/ah-authority").read_bytes()
+            )
+            wrapper.chmod(0o700)
+            source.write_bytes(
+                (root / "runtime/authority/macos-broker.swift").read_bytes()
+            )
+
+            result = subprocess.run(
+                [wrapper, "--attest"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ,
+                timeout=180,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            attestation = json.loads(result.stdout)
+            wrapper_digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
+            native_binary = (
+                source.parent / ".ah-authority-cache/macos-broker"
+            )
+            native_digest = hashlib.sha256(
+                native_binary.read_bytes()
+            ).hexdigest()
+            self.assertEqual(
+                attestation["launcher_content_digest"],
+                wrapper_digest,
+            )
+            self.assertEqual(
+                attestation["launcher_code_identity"],
+                f"sha256:{wrapper_digest}",
+            )
+            self.assertEqual(
+                attestation["native_broker_content_digest"],
+                native_digest,
+            )
+            self.assertNotEqual(wrapper_digest, native_digest)
+            self.assertIsInstance(
+                attestation["native_broker_code_identity"],
+                str,
+            )
+
+            body = setup_body()
+            wal = case_root / "authority-bootstrap.wal"
+            descriptor = plan_authority_bootstrap(
+                body.digest,
+                requirements(
+                    wal,
+                    broker_locator=str(wrapper),
+                    launcher_code_identity=attestation[
+                        "launcher_code_identity"
+                    ],
+                    launcher_content_digest=attestation[
+                        "launcher_content_digest"
+                    ],
+                    native_broker_code_identity=attestation[
+                        "native_broker_code_identity"
+                    ],
+                    native_broker_content_digest=attestation[
+                        "native_broker_content_digest"
+                    ],
+                ),
+            )
+            plan = build_final_install_plan(
+                body,
+                descriptor,
+                created_at=CREATED_AT,
+            )
+            observations = MemoryAuthorityBackend(
+                code_identity=attestation["native_broker_code_identity"]
+            ).observe(descriptor.locators)
+            verified = verify_authority_bootstrap(
+                plan,
+                descriptor.to_document(),
+                expected_installation_id=INSTALLATION_ID,
+                observations=observations,
+            )
+            backend = open_native_authority_backend(verified)
+            self.assertEqual(
+                backend.code_identity,
+                attestation["native_broker_code_identity"],
+            )
+
+            self_test = subprocess.run(
+                [wrapper, "--self-test"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ,
+                timeout=180,
+            )
+            self.assertEqual(self_test.returncode, 0, self_test.stderr)
+            evidence = json.loads(self_test.stdout)
+            self.assertTrue(evidence["launcher_native_binding_valid"])
+            self.assertFalse(evidence["keychain_mutated"])
+            self.assertFalse(evidence["user_presence_requested"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS native broker")
+    def test_authority_wrapper_recovers_stale_lock_and_preserves_live_lock(
+        self,
+    ):
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            case_root = Path(directory).resolve()
+            wrapper = case_root / "runtime/bin/ah-authority"
+            source = case_root / "runtime/authority/macos-broker.swift"
+            wrapper.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            wrapper.write_bytes(
+                (root / "runtime/bin/ah-authority").read_bytes()
+            )
+            wrapper.chmod(0o700)
+            source.write_bytes(
+                (root / "runtime/authority/macos-broker.swift").read_bytes()
+            )
+
+            prewarm = subprocess.run(
+                [wrapper, "--attest"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ,
+                timeout=180,
+            )
+            self.assertEqual(prewarm.returncode, 0, prewarm.stderr)
+            lock = source.parent / ".ah-authority-cache/.build-lock"
+            lock.write_text("999999\n")
+            lock.chmod(0o600)
+
+            recovered = subprocess.run(
+                [wrapper, "--attest"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=os.environ,
+                timeout=60,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            self.assertFalse(lock.exists())
+
+            owner = subprocess.Popen(["/bin/sleep", "30"])
+            try:
+                lock.write_text(f"{owner.pid}\n")
+                lock.chmod(0o600)
+                live_result = subprocess.run(
+                    [wrapper, "--attest"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=os.environ,
+                    timeout=60,
+                )
+                self.assertNotEqual(live_result.returncode, 0)
+                self.assertIn("locked", live_result.stderr)
+                self.assertEqual(lock.read_text(), f"{owner.pid}\n")
+                self.assertIsNone(owner.poll())
+            finally:
+                owner.terminate()
+                owner.wait(timeout=10)
 
     def test_direct_raw_native_bootstrap_cannot_provision(self):
         fake = Path(__file__).with_name("fake_native_broker.py").resolve()

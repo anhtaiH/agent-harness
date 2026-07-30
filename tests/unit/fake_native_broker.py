@@ -251,8 +251,14 @@ def bootstrap(
         "schema_version": 1,
         "created_at": request["created_at"],
         "installation_id": request["installation_id"],
-        "broker_code_identity": CODE_IDENTITY,
-        "broker_content_digest": content_digest,
+        "launcher_code_identity": request.get(
+            "launcher_code_identity", CODE_IDENTITY
+        ),
+        "launcher_content_digest": request.get(
+            "launcher_content_digest", content_digest
+        ),
+        "native_broker_code_identity": CODE_IDENTITY,
+        "native_broker_content_digest": content_digest,
         "approval_public_key_digest": APPROVAL_PUBLIC_KEY_DIGEST,
         "approval_persistent_reference": "opaque:fake-approval-key",
         "anchor_backend_id": "fake-native-anchor-v1",
@@ -289,10 +295,13 @@ def bootstrap(
 def main() -> None:
     command = sys.argv[1]
     if command == "--attest":
+        content_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         response = {
             "protocol_version": 1,
-            "code_identity": CODE_IDENTITY,
-            "content_digest": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "launcher_code_identity": CODE_IDENTITY,
+            "launcher_content_digest": content_digest,
+            "native_broker_code_identity": CODE_IDENTITY,
+            "native_broker_content_digest": content_digest,
         }
     elif command == "health":
         response = {
