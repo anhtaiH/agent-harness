@@ -35,6 +35,12 @@ for script in "$ROOT"/runtime/bin/ah-* "$ROOT/runtime/bin/env-scrub.sh" "$ROOT"/
 done
 echo "syntax ok"
 
+cmp -s "$ROOT/package-lock.json" "$ROOT/npm-shrinkwrap.json" || {
+  echo "package-lock.json and npm-shrinkwrap.json diverged" >&2
+  exit 1
+}
+(cd "$ROOT" && npm audit --omit=dev --audit-level=low >/dev/null)
+
 step "2/5 gate verification (source tree)"
 "$ROOT/bin/agent-harness" verify-gates --json | grep -q '"ok": true'
 echo "gates ok"
