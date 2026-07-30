@@ -21,6 +21,9 @@ APPROVAL_PUBLIC_KEY_DIGEST = hashlib.sha256(APPROVAL_KEY).hexdigest()
 CODE_IDENTITY = "test-native-code-v1"
 TRANSITION_DOMAIN = b"agent-harness/verified-anchor-transition/v1\0"
 TRANSITION_MAC_DOMAIN = b"agent-harness/mac/anchor-transition-request/v1\0"
+BOOTSTRAP_CAPABILITY_DOMAIN = (
+    b"agent-harness/native-bootstrap-capability/v1\0"
+)
 
 
 def read_request() -> dict[str, object]:
@@ -78,6 +81,29 @@ def canonical_json(value: object) -> bytes:
     ).encode()
 
 
+def require_bootstrap_authorization(request: dict[str, object]) -> None:
+    authorization = request.pop("bootstrap_authorization", None)
+    descriptor = int(os.environ["AGENT_HARNESS_BOOTSTRAP_CAPABILITY_FD"])
+    try:
+        secret = os.read(descriptor, 33)
+    finally:
+        os.close(descriptor)
+    if len(secret) != 32 or not isinstance(authorization, str):
+        raise ValueError("verified bootstrap authorization required")
+    expected = hmac.new(
+        secret,
+        BOOTSTRAP_CAPABILITY_DOMAIN + canonical_json(request),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(authorization, expected):
+        raise ValueError("verified bootstrap authorization required")
+
+
+def require_fake_user_presence() -> None:
+    if os.environ.get("AGENT_HARNESS_FAKE_USER_PRESENCE") != "approved":
+        raise ValueError("protected user presence denied")
+
+
 def require_transition_authorization(request: dict[str, object]) -> None:
     encoded_key = os.environ.get("AGENT_HARNESS_FAKE_TRANSITION_KEY")
     authorization = request.get("authorization_mac")
@@ -128,7 +154,7 @@ def require_approval_envelope(envelope: bytes, summary: object) -> None:
         "expires_at",
     }
     if (
-        not required <= set(document)
+        set(document) != required
         or document.get("schema")
         != "agent-harness/external-write-envelope"
         or document.get("schema_version") != 1
@@ -168,6 +194,8 @@ def require_approval_envelope(envelope: bytes, summary: object) -> None:
 def bootstrap(
     request: dict[str, object], *, allow_existing: bool
 ) -> dict[str, object]:
+    require_bootstrap_authorization(request)
+    require_fake_user_presence()
     markers = {
         key: request[key]
         for key in (
@@ -196,6 +224,7 @@ def bootstrap(
         for stage in (
             "approval_key",
             "receipt_key",
+            "integrity_key",
             "anchor",
             "bootstrap_record",
         ):
@@ -231,6 +260,9 @@ def bootstrap(
         "receipt_key_id": "fake-native-receipt-key",
         "receipt_public_key_digest": hashlib.sha256(RECEIPT_KEY).hexdigest(),
         "receipt_persistent_reference": "opaque:fake-receipt-key",
+        "integrity_key_id": "fake-native-integrity-key",
+        "integrity_key_locator": "agent-harness.signing-key.v1",
+        "integrity_persistent_reference": "opaque:fake-integrity-key",
         "terminal_pin_locator": "agent-harness.authority.terminal-pin.v1",
         "terminal_pin_attributes": {
             "add_only": True,
@@ -282,6 +314,17 @@ def main() -> None:
         def compare_and_advance():
             state = load_state()
             anchor = state["anchor"]
+            recovered = state.get("last_anchor_receipt")
+            if (
+                anchor["namespace"] == request["namespace"]
+                and anchor["generation"] == request["new_generation"]
+                and anchor["commitment"] == request["new_commitment"]
+                and isinstance(recovered, dict)
+                and recovered.get("transition_digest")
+                == request["transition_digest"]
+                and recovered.get("operation_id") == request["nonce"]
+            ):
+                return recovered
             if (
                 anchor["namespace"] != request["namespace"]
                 or anchor["generation"] != request["old_generation"]
@@ -293,8 +336,6 @@ def main() -> None:
                 "generation": request["new_generation"],
                 "commitment": request["new_commitment"],
             }
-            state["anchor"] = anchor
-            save_state(state)
             receipt = {
                 "schema": "agent-harness/state-anchor-receipt",
                 "schema_version": 1,
@@ -317,6 +358,11 @@ def main() -> None:
                 receipt, sort_keys=True, separators=(",", ":")
             ).encode()
             receipt["broker_receipt"] = receipt_signature(payload)
+            state["anchor"] = anchor
+            state["last_anchor_receipt"] = receipt
+            save_state(state)
+            if request.get("test_crash_after_update"):
+                raise RuntimeError("injected crash after anchor update")
             return receipt
 
         response = locked(compare_and_advance)

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import unittest
 
+import harness_core.auth as auth_module
 from harness_core.contracts import (
     SchemaError,
     canonical_json_bytes,
@@ -263,6 +264,8 @@ class ContractTests(unittest.TestCase):
         document = {
             "schema": "agent-harness/workspace-manifest",
             "schema_version": 2,
+            "created_at": CREATED_AT,
+            "installation_id": INSTALLATION_ID,
             "future": True,
         }
         self.assertEqual(
@@ -276,6 +279,48 @@ class ContractTests(unittest.TestCase):
             require_document(document, "workspace-manifest")["future"],
             {"kept": True},
         )
+
+    def test_require_document_enforces_base_schema_on_read(self):
+        valid = valid_workspace_manifest()
+        invalid = (
+            {key: value for key, value in valid.items() if key != "created_at"},
+            {**valid, "created_at": "2026-07-30 12:00:00Z"},
+            {
+                key: value
+                for key, value in valid.items()
+                if key != "installation_id"
+            },
+            {**valid, "installation_id": "caller-selected"},
+        )
+        for document in invalid:
+            with self.subTest(document=document):
+                with self.assertRaises(SchemaError):
+                    require_document(document, "workspace-manifest")
+
+    def test_authenticated_producers_have_explicit_schema_contracts(self):
+        schema_root = Path(__file__).parents[2] / "runtime" / "schemas"
+        self.assertEqual(
+            set(auth_module._MAC_DOMAINS)
+            - set(auth_module._MAC_REQUIRED_FIELDS),
+            {"anchor_transition_request"},
+        )
+        base = {"schema", "schema_version", "created_at", "installation_id"}
+        for operation, fields in auth_module._MAC_REQUIRED_FIELDS.items():
+            kind = operation.replace("_", "-")
+            with self.subTest(kind=kind):
+                schema = json.loads(
+                    (
+                        schema_root / f"{kind}.v1.schema.json"
+                    ).read_text()
+                )
+                authenticated_fields = set(fields) | {"mac"}
+                self.assertTrue(
+                    base | set(fields) <= set(schema["required"])
+                )
+                self.assertTrue(
+                    base | authenticated_fields
+                    <= set(schema["properties"])
+                )
 
     def test_payload_cannot_replace_base_identity(self):
         with self.assertRaisesRegex(SchemaError, "reserved field"):

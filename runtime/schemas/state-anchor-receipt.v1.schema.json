@@ -18,7 +18,8 @@
     "new_generation": {"type": "integer", "minimum": 1},
     "new_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "operation_id": {"type": "string", "minLength": 1},
-    "broker_receipt": {"type": "string", "minLength": 1}
+    "broker_receipt": {"type": "string", "minLength": 1},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "additionalProperties": true
 }

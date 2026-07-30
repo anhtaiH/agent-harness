@@ -656,19 +656,34 @@ class IntegrityAuthority:
     def _verify_mac(
         self, value: Mapping[str, object], operation: str
     ) -> dict[str, object]:
-        if "mac" not in value:
+        document = require_document(
+            dict(value),
+            operation.replace("_", "-"),
+        )
+        missing = [
+            field
+            for field in _MAC_REQUIRED_FIELDS[operation]
+            if field not in document
+        ]
+        if missing:
+            raise IntegrityError(
+                f"{operation.replace('_', '-')} incomplete authentication: "
+                + ", ".join(missing)
+            )
+        _validate_mac_semantics(operation, document)
+        if "mac" not in document:
             raise IntegrityError("missing MAC")
-        given = value["mac"]
+        given = document["mac"]
         if (
             not isinstance(given, str)
             or len(given) != 64
             or any(character not in "0123456789abcdef" for character in given)
         ):
             raise IntegrityError("malformed MAC")
-        expected = self._mac_for(operation, value)
+        expected = self._mac_for(operation, document)
         if not hmac.compare_digest(given, expected):
             raise IntegrityError("MAC verification failed")
-        return dict(value)
+        return document
 
     @staticmethod
     def _bindings(

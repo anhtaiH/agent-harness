@@ -440,8 +440,26 @@ class AuthorityBootstrapTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIn(f'case "{command}"', source)
-        self.assertIn("AGENT_HARNESS_AUTHORITY_CONTENT_DIGEST", wrapper)
-        self.assertIn("AGENT_HARNESS_AUTHORITY_CODE_IDENTITY", wrapper)
+        self.assertNotIn("AGENT_HARNESS_AUTHORITY_BINARY", wrapper)
+        self.assertIn(
+            'CACHE_ROOT="$ROOT/runtime/authority/.ah-authority-cache"',
+            wrapper,
+        )
+        self.assertIn("BUILD_IDENTITY", wrapper)
+        self.assertIn("cache_is_valid", wrapper)
+        self.assertIn("func currentExecutableURL() throws -> URL", source)
+        current_access = source.split(
+            "func currentApplicationAccess()", 1
+        )[1].split("func addSecureEnclaveKey", 1)[0]
+        self.assertIn(
+            "let executable = try currentExecutableURL()",
+            current_access,
+        )
+        self.assertIn(
+            "SecTrustedApplicationCreateFromPath($0, &trustedApplication)",
+            current_access,
+        )
+        self.assertNotIn("nil, &trustedApplication", current_access)
         anchor_request = source.split("struct AnchorCASRequest", 1)[1].split(
             "}", 1
         )[0]

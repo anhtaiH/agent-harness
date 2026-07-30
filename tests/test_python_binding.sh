@@ -60,6 +60,52 @@ expect_rejected() {
   fi
 }
 
+PRE_FIRST_EXEC="$TMP_DIR/pre-first-exec-python"
+cp "$REQUIRED_PYTHON" "$PRE_FIRST_EXEC"
+cat >"$PRE_FIRST_EXEC.replacement" <<'SH'
+#!/usr/bin/env bash
+echo "PRE_FIRST_EXEC_REPLACEMENT_RAN" >&2
+exit 94
+SH
+chmod +x "$PRE_FIRST_EXEC" "$PRE_FIRST_EXEC.replacement"
+PRE_FIRST_EXEC_ROOT="$TMP_DIR/pre-first-exec"
+make_root "$PRE_FIRST_EXEC_ROOT"
+"$REQUIRED_PYTHON" - "$PRE_FIRST_EXEC_ROOT/tests/run.sh" \
+  "$PRE_FIRST_EXEC" <<'PY'
+from pathlib import Path
+import sys
+
+runner = Path(sys.argv[1])
+interpreter = sys.argv[2]
+source = runner.read_text()
+marker = (
+    'PYTHON_IDENTITY="$(python_identity)" ||\n'
+    '  python_binding_error "AGENT_HARNESS_PYTHON identity unavailable"\n'
+)
+replacement = (
+    marker
+    + f'/bin/mv "{interpreter}.replacement" "{interpreter}"\n'
+    + f'/bin/chmod +x "{interpreter}"\n'
+)
+if source.count(marker) != 1:
+    raise SystemExit("runner identity marker is missing or ambiguous")
+runner.write_text(source.replace(marker, replacement))
+PY
+run_case "$PRE_FIRST_EXEC_ROOT" AGENT_HARNESS_PYTHON="$PRE_FIRST_EXEC"
+PRE_FIRST_EXEC_FAILED=0
+if [ "$CASE_STATUS" -eq 0 ] ||
+   ! grep -Fq "AGENT_HARNESS_PYTHON changed after validation" "$OUT"; then
+  echo "pre-first-exec: expected rejection before interpreter execution" >&2
+  cat "$OUT" >&2
+  PRE_FIRST_EXEC_FAILED=1
+fi
+if grep -Fq "PRE_FIRST_EXEC_REPLACEMENT_RAN" "$OUT"; then
+  echo "pre-first-exec: replacement interpreter must not run" >&2
+  cat "$OUT" >&2
+  PRE_FIRST_EXEC_FAILED=1
+fi
+[ "$PRE_FIRST_EXEC_FAILED" -eq 0 ] || exit 1
+
 expect_rejected missing "AGENT_HARNESS_PYTHON must be set" -u AGENT_HARNESS_PYTHON
 
 RELATIVE_PYTHON="$TMP_DIR/relative-python"

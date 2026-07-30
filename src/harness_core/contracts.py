@@ -79,4 +79,9 @@ def require_document(
         raise SchemaError("schema_version must be a positive integer")
     if mutable and version > SCHEMA_VERSION:
         raise SchemaError(f"newer schema_version {version} is read-only")
+    require_rfc3339_utc(value.get("created_at"))
+    try:
+        uuid.UUID(value.get("installation_id"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise SchemaError("installation_id must be a UUID") from error
     return dict(value)

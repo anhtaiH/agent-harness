@@ -36,16 +36,6 @@ python_identity() {
 
 PYTHON_IDENTITY="$(python_identity)" ||
   python_binding_error "AGENT_HARNESS_PYTHON identity unavailable"
-PYTHON_VERSION="$(
-  "$AGENT_HARNESS_PYTHON" -c \
-    'import sys; print(f"{sys.version_info.major}\t{sys.version_info.minor}")'
-)" || python_binding_error "AGENT_HARNESS_PYTHON probe failed"
-IFS=$'\t' read -r PYTHON_MAJOR PYTHON_MINOR <<<"$PYTHON_VERSION"
-if ! [[ "$PYTHON_MAJOR" =~ ^[0-9]+$ && "$PYTHON_MINOR" =~ ^[0-9]+$ ]] ||
-   [ "$PYTHON_MAJOR" -lt 3 ] ||
-   { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
-  python_binding_error "AGENT_HARNESS_PYTHON requires Python 3.10 or newer"
-fi
 readonly AGENT_HARNESS_PYTHON
 readonly PYTHON_IDENTITY
 
@@ -62,6 +52,16 @@ run_bound_python() {
   "$AGENT_HARNESS_PYTHON" "$@"
 }
 
+PYTHON_VERSION="$(
+  run_bound_python -c \
+    'import sys; print(f"{sys.version_info.major}\t{sys.version_info.minor}")'
+)" || python_binding_error "AGENT_HARNESS_PYTHON probe failed"
+IFS=$'\t' read -r PYTHON_MAJOR PYTHON_MINOR <<<"$PYTHON_VERSION"
+if ! [[ "$PYTHON_MAJOR" =~ ^[0-9]+$ && "$PYTHON_MINOR" =~ ^[0-9]+$ ]] ||
+   [ "$PYTHON_MAJOR" -lt 3 ] ||
+   { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
+  python_binding_error "AGENT_HARNESS_PYTHON requires Python 3.10 or newer"
+fi
 PYTHONPATH="$ROOT/src" run_bound_python -m unittest discover \
   -s "$ROOT/tests/unit" -p 'test_*.py'
 

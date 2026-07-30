@@ -17,7 +17,12 @@ import time
 from typing import Callable, Mapping
 import uuid
 
-from .auth import IntegrityAuthority, VerifiedInstallationState
+from .auth import (
+    IntegrityAuthority,
+    VerifiedFinalizationPlan,
+    VerifiedInstallationState,
+    VerifiedStateAnchorReceipt,
+)
 from .contracts import (
     FINAL_INSTALL_PLAN_DOMAIN,
     canonical_json_bytes,
@@ -32,6 +37,11 @@ ANCHOR_ITEM_LOCATOR = "agent-harness.authority.anchor.v1"
 RECEIPT_KEY_LOCATOR = "agent-harness.authority.broker-receipt-key.v1"
 BOOTSTRAP_RECORD_LOCATOR = "agent-harness.authority.bootstrap-record.v1"
 TERMINAL_PIN_LOCATOR = "agent-harness.authority.terminal-pin.v1"
+INTEGRITY_KEY_LOCATOR = "agent-harness.signing-key.v1"
+
+_BOOTSTRAP_CAPABILITY_DOMAIN = (
+    b"agent-harness/native-bootstrap-capability/v1\0"
+)
 
 AUTHORITY_BOOTSTRAP_CRASH_POINTS = (
     "before_wal_write",
@@ -107,6 +117,14 @@ class NativeAuthorityBackend:
         "__environment",
         "__attestation",
         "__qualifying",
+        "__bootstrap_capability",
+        "__trusted_plan_digest",
+        "__test_backend",
+        "__verified_manifest",
+        "__executable_device",
+        "__executable_inode",
+        "__content_digest",
+        "__code_identity",
     )
 
     def __init__(
@@ -117,6 +135,9 @@ class NativeAuthorityBackend:
         attestation: Mapping[str, object],
         *,
         qualifying: bool,
+        bootstrap_capability: bytes,
+        trusted_plan_digest: str | None,
+        test_backend: bool,
     ) -> None:
         if token is not _NATIVE_BACKEND_TOKEN:
             raise TypeError("NativeAuthorityBackend requires verified attestation")
@@ -124,6 +145,21 @@ class NativeAuthorityBackend:
         self.__environment = dict(environment)
         self.__attestation = _json_copy(attestation)
         self.__qualifying = qualifying
+        self.__bootstrap_capability = bytes(bootstrap_capability)
+        self.__trusted_plan_digest = trusted_plan_digest
+        self.__test_backend = test_backend
+        self.__verified_manifest: bytes | None = None
+        (
+            self.__executable_device,
+            self.__executable_inode,
+            self.__content_digest,
+        ) = self.__read_executable_witness()
+        self.__code_identity = str(attestation["code_identity"])
+        if not hmac.compare_digest(
+            self.__content_digest,
+            str(attestation["content_digest"]),
+        ):
+            raise CapabilityFailure("native authority changed after attestation")
 
     @property
     def qualifying(self) -> bool:
@@ -144,19 +180,121 @@ class NativeAuthorityBackend:
     def user_presence_available(self) -> bool:
         return bool(self.health().get("user_presence_available", True))
 
+    def __read_executable_witness(self) -> tuple[int, int, str]:
+        try:
+            descriptor = os.open(
+                self.__executable,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as error:
+            raise CapabilityFailure(
+                "native authority changed after attestation"
+            ) from error
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o111 == 0
+            ):
+                raise CapabilityFailure(
+                    "native authority changed after attestation"
+                )
+            with os.fdopen(os.dup(descriptor), "rb") as source:
+                digest = hashlib.sha256(source.read()).hexdigest()
+            return metadata.st_dev, metadata.st_ino, digest
+        finally:
+            os.close(descriptor)
+
+    def __revalidate_executable(self) -> None:
+        device, inode, digest = self.__read_executable_witness()
+        if (
+            device != self.__executable_device
+            or inode != self.__executable_inode
+            or not hmac.compare_digest(digest, self.__content_digest)
+        ):
+            raise CapabilityFailure("native authority changed after attestation")
+
+    def __verify_current_attestation(
+        self,
+        environment: Mapping[str, str],
+    ) -> None:
+        self.__revalidate_executable()
+        probe = subprocess.run(
+            [str(self.__executable), "--attest"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            raise CapabilityFailure("native authority attestation failed")
+        try:
+            attestation = json.loads(probe.stdout)
+        except json.JSONDecodeError as error:
+            raise CapabilityFailure(
+                "native authority attestation is malformed"
+            ) from error
+        if (
+            not isinstance(attestation, dict)
+            or attestation.get("protocol_version") != 1
+            or not hmac.compare_digest(
+                str(attestation.get("content_digest")),
+                self.__content_digest,
+            )
+            or attestation.get("code_identity") != self.__code_identity
+        ):
+            raise CapabilityFailure("native authority attestation mismatch")
+
     def _request(
         self,
         command: str,
         value: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        result = subprocess.run(
-            [str(self.__executable), command],
-            input=None if value is None else canonical_json_bytes(value),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env={**os.environ, **self.__environment},
-            timeout=30,
-        )
+        request_value = None if value is None else _json_copy(value)
+        environment = {**os.environ, **self.__environment}
+        self.__verify_current_attestation(environment)
+        self.__revalidate_executable()
+        inherited: tuple[int, ...] = ()
+        capability_fd: int | None = None
+        if command in {"bootstrap", "bootstrap-recover"}:
+            if request_value is None:
+                raise CapabilityFailure("native bootstrap request is required")
+            unsigned = {
+                key: item
+                for key, item in request_value.items()
+                if key != "bootstrap_authorization"
+            }
+            request_value["bootstrap_authorization"] = hmac.new(
+                self.__bootstrap_capability,
+                _BOOTSTRAP_CAPABILITY_DOMAIN + canonical_json_bytes(unsigned),
+                hashlib.sha256,
+            ).hexdigest()
+            capability_fd, writer = os.pipe()
+            try:
+                os.write(writer, self.__bootstrap_capability)
+            finally:
+                os.close(writer)
+            environment["AGENT_HARNESS_BOOTSTRAP_CAPABILITY_FD"] = str(
+                capability_fd
+            )
+            inherited = (capability_fd,)
+        try:
+            result = subprocess.run(
+                [str(self.__executable), command],
+                input=(
+                    None
+                    if request_value is None
+                    else canonical_json_bytes(request_value)
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                pass_fds=inherited,
+                timeout=30,
+            )
+        finally:
+            if capability_fd is not None:
+                os.close(capability_fd)
         if result.returncode != 0:
             detail = result.stderr.decode("utf-8", "replace").strip()
             raise CapabilityFailure(
@@ -223,6 +361,18 @@ class NativeAuthorityBackend:
         except CapabilityFailure:
             return False
         return response.get("valid") is True
+
+    def _accept_verified_manifest(
+        self,
+        plan: VerifiedAuthorityBootstrapPlan,
+        manifest: Mapping[str, object],
+    ) -> None:
+        if self.__test_backend:
+            return
+        if self.__trusted_plan_digest != plan.descriptor_digest:
+            raise CapabilityFailure("native authority trusted plan mismatch")
+        self.__verified_manifest = canonical_json_bytes(manifest)
+        self.__qualifying = True
 
     def anchor_read(self, namespace: str) -> tuple[int, str]:
         response = self._request("anchor-read", {"namespace": namespace})
@@ -384,6 +534,7 @@ def open_test_native_authority_backend(
     environment = {
         "AGENT_HARNESS_FAKE_NATIVE_STATE": str(Path(state_path).resolve()),
         "AGENT_HARNESS_FAKE_TRANSITION_KEY": transition_secret.hex(),
+        "AGENT_HARNESS_FAKE_USER_PRESENCE": "approved",
     }
     resolved, _, attestation = _attest_native_executable(
         executable, environment=environment
@@ -394,21 +545,37 @@ def open_test_native_authority_backend(
         environment,
         attestation,
         qualifying=False,
+        bootstrap_capability=hashlib.sha256(transition_secret).digest(),
+        trusted_plan_digest=None,
+        test_backend=True,
     )
 
 
 def open_native_authority_backend(
-    executable: Path | str,
-    *,
-    expected_content_digest: str,
-    expected_code_identity: str,
+    plan: object,
+    **caller_assertions: object,
 ) -> NativeAuthorityBackend:
+    if (
+        caller_assertions
+        or not isinstance(plan, VerifiedAuthorityBootstrapPlan)
+    ):
+        raise CapabilityFailure(
+            "qualifying native authority requires a trusted bootstrap plan"
+        )
+    descriptor = plan.descriptor
+    executable = Path(descriptor.broker_locator)
+    if not executable.is_absolute():
+        raise CapabilityFailure(
+            "trusted bootstrap helper locator must be absolute"
+        )
     resolved, content_digest, attestation = _attest_native_executable(
         executable, environment={}
     )
     if (
-        not hmac.compare_digest(content_digest, expected_content_digest)
-        or attestation["code_identity"] != expected_code_identity
+        not hmac.compare_digest(
+            content_digest, descriptor.broker_content_digest
+        )
+        or attestation["code_identity"] != descriptor.broker_code_identity
     ):
         raise CapabilityFailure("native authority pinned identity mismatch")
     return NativeAuthorityBackend(
@@ -416,7 +583,10 @@ def open_native_authority_backend(
         resolved,
         {},
         attestation,
-        qualifying=True,
+        qualifying=False,
+        bootstrap_capability=plan._native_bootstrap_secret(),
+        trusted_plan_digest=plan.descriptor_digest,
+        test_backend=False,
     )
 
 
@@ -545,6 +715,13 @@ def _default_item_attributes() -> dict[str, object]:
             "accessibility": "AfterFirstUnlockThisDeviceOnly",
             "code_identity_restricted": True,
         },
+        "integrity_key": {
+            "key_type": "HMAC-SHA256",
+            "non_exportable": True,
+            "synchronizable": False,
+            "accessibility": "AfterFirstUnlockThisDeviceOnly",
+            "code_identity_restricted": True,
+        },
         "bootstrap_record": {
             "add_only": True,
             "contains_key_material": False,
@@ -574,6 +751,7 @@ class AuthorityBootstrapRequirements:
     approval_key_locator: str = APPROVAL_KEY_LOCATOR
     anchor_item_locator: str = ANCHOR_ITEM_LOCATOR
     receipt_key_locator: str = RECEIPT_KEY_LOCATOR
+    integrity_key_locator: str = INTEGRITY_KEY_LOCATOR
     bootstrap_record_locator: str = BOOTSTRAP_RECORD_LOCATOR
     terminal_pin_locator: str = TERMINAL_PIN_LOCATOR
     item_attributes: Mapping[str, object] = field(
@@ -674,6 +852,7 @@ class AuthorityBootstrapDescriptor:
             "approval_key",
             "anchor",
             "receipt_key",
+            "integrity_key",
             "bootstrap_record",
             "terminal_pin",
         }
@@ -707,6 +886,7 @@ def plan_authority_bootstrap(
         "approval_key": requirements.approval_key_locator,
         "anchor": requirements.anchor_item_locator,
         "receipt_key": requirements.receipt_key_locator,
+        "integrity_key": requirements.integrity_key_locator,
         "bootstrap_record": requirements.bootstrap_record_locator,
         "terminal_pin": requirements.terminal_pin_locator,
     }
@@ -786,6 +966,7 @@ class VerifiedAuthorityBootstrapPlan:
         "__setup_body_digest",
         "__descriptor_digest",
         "__pending_plan_commitment",
+        "__native_capability",
     )
 
     def __init__(
@@ -810,6 +991,7 @@ class VerifiedAuthorityBootstrapPlan:
         self.__setup_body_digest = bytes.fromhex(descriptor.setup_body_digest)
         self.__descriptor_digest = bytes.fromhex(descriptor.digest)
         self.__pending_plan_commitment = bytes.fromhex(final_plan["plan_digest"])
+        self.__native_capability = secrets.token_bytes(32)
 
     @property
     def descriptor(self) -> AuthorityBootstrapDescriptor:
@@ -842,6 +1024,11 @@ class VerifiedAuthorityBootstrapPlan:
     @property
     def pending_plan_commitment(self) -> str:
         return self.__pending_plan_commitment.hex()
+
+    def _native_bootstrap_secret(self) -> bytes:
+        if self.__consumed:
+            raise AuthorityError("authority bootstrap plan already consumed")
+        return bytes(self.__native_capability)
 
     def consume(self) -> None:
         if self.__consumed:
@@ -1081,6 +1268,17 @@ def _item_values(
             },
         ),
         (
+            "integrity_key",
+            locators["integrity_key"],
+            {
+                **markers,
+                "purpose": "integrity-key",
+                "attributes": descriptor.item_attributes["integrity_key"],
+                "key_id": f"native-integrity:{descriptor.installation_id}",
+                "persistent_reference": "opaque:integrity-key",
+            },
+        ),
+        (
             "bootstrap_record",
             locators["bootstrap_record"],
             {
@@ -1112,6 +1310,9 @@ def _manifest(
         "receipt_key_id": f"broker-receipt:{descriptor.installation_id}",
         "receipt_public_key_digest": backend.receipt_public_key_digest,
         "receipt_persistent_reference": "opaque:broker-receipt-key",
+        "integrity_key_id": f"native-integrity:{descriptor.installation_id}",
+        "integrity_key_locator": descriptor.locator_map["integrity_key"],
+        "integrity_persistent_reference": "opaque:integrity-key",
         "terminal_pin_locator": descriptor.locator_map["terminal_pin"],
         "terminal_pin_attributes": descriptor.item_attributes["terminal_pin"],
         "capability_state": list(descriptor.capabilities),
@@ -1136,6 +1337,7 @@ def _native_bootstrap_request(
         "creator_id": descriptor.creator_id,
         "descriptor_digest": descriptor.digest,
         "final_plan_digest": plan.pending_plan_commitment,
+        "final_plan": plan.final_plan,
         "wal_digest": wal["wal_digest"],
         "anchor_namespace": descriptor.initial_anchor_namespace,
         "initial_anchor_generation": descriptor.initial_anchor_generation,
@@ -1159,6 +1361,7 @@ def _verified_native_manifest(
         "broker_code_identity": descriptor.broker_code_identity,
         "broker_content_digest": descriptor.broker_content_digest,
         "anchor_namespace": descriptor.initial_anchor_namespace,
+        "integrity_key_locator": descriptor.locator_map["integrity_key"],
         "terminal_pin_locator": descriptor.locator_map["terminal_pin"],
         "terminal_pin_attributes": descriptor.item_attributes["terminal_pin"],
         "capability_state": list(descriptor.capabilities),
@@ -1174,6 +1377,8 @@ def _verified_native_manifest(
         "receipt_key_id",
         "receipt_public_key_digest",
         "receipt_persistent_reference",
+        "integrity_key_id",
+        "integrity_persistent_reference",
     ):
         value = manifest.get(field)
         if not isinstance(value, str) or not value:
@@ -1193,6 +1398,7 @@ def _verified_native_manifest(
         manifest
     ):
         raise CapabilityFailure("native authority manifest signature mismatch")
+    backend._accept_verified_manifest(plan, manifest)
     return (
         {key: _json_copy(value) for key, value in manifest.items()},
         signature,
@@ -1869,4 +2075,240 @@ def create_test_approval_authority(
         expected_public_key_digest=expected_public_key_digest,
         broker_code_identity=broker_code_identity,
         clock=time.time if current_time is None else lambda: current_time,
+    )
+
+
+def issue_authority_retirement(
+    finalization: VerifiedFinalizationPlan,
+    anchor: LiveAnchorBroker,
+    anchor_receipt: VerifiedStateAnchorReceipt,
+    approval: Mapping[str, object],
+    terminal_attestation: Mapping[str, object],
+    attestation_readback: Mapping[str, object],
+    *,
+    approval_authority: ApprovalAuthority,
+    backend: NativeAuthorityBackend,
+    now: int | None = None,
+) -> VerifiedAuthorityRetirementPlan:
+    if not isinstance(finalization, VerifiedFinalizationPlan):
+        raise TypeError("VerifiedFinalizationPlan required")
+    if not isinstance(anchor, LiveAnchorBroker):
+        raise TypeError("LiveAnchorBroker required")
+    if not isinstance(anchor_receipt, VerifiedStateAnchorReceipt):
+        raise TypeError("VerifiedStateAnchorReceipt required")
+    if not isinstance(approval_authority, ApprovalAuthority):
+        raise TypeError("ApprovalAuthority required")
+    if not isinstance(backend, NativeAuthorityBackend):
+        raise TypeError("NativeAuthorityBackend required")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (approval, terminal_attestation, attestation_readback)
+    ):
+        raise TypeError("structured retirement evidence is required")
+
+    plan = finalization.document
+    context = anchor._transition_context()
+    installation_id = finalization.installation_id
+    generation = finalization.generation
+    commitment = finalization.anchor_commitment
+    if (
+        plan.get("lifecycle_phase") != "UNINSTALLED_PUBLISHED"
+        or plan.get("predecessor_generation") != generation
+        or context["installation_id"] != installation_id
+        or context["generation"] != generation
+        or context["commitment"] != commitment
+        or context["broker_code_identity"] != backend.code_identity
+    ):
+        raise AuthorityError(
+            "retirement finalization/live-anchor binding mismatch"
+        )
+    anchor_receipt.require_binding(
+        expected_installation_id=installation_id,
+        expected_generation=generation,
+        expected_anchor_commitment=commitment,
+    )
+    receipt = anchor_receipt.document
+    if (
+        receipt.get("anchor_namespace") != context["namespace"]
+        or receipt.get("new_generation") != generation
+        or receipt.get("new_commitment") != commitment
+    ):
+        raise AuthorityError("retirement anchor receipt mismatch")
+    anchor_receipt_digest = hashlib.sha256(
+        canonical_json_bytes(receipt)
+    ).hexdigest()
+
+    attestation_fields = {
+        "installation_id",
+        "authority_era",
+        "receipt_public_key_digest",
+        "helper_object_identity",
+        "helper_finalizer_digest",
+        "broker_code_identity",
+        "anchor_namespace",
+        "anchor_generation",
+        "anchor_commitment",
+        "terminal_pin_locator",
+        "attestation_digest",
+        "broker_signature",
+    }
+    attestation = _json_copy(terminal_attestation)
+    if (
+        set(attestation) != attestation_fields
+        or canonical_json_bytes(attestation)
+        != canonical_json_bytes(attestation_readback)
+    ):
+        raise AuthorityError(
+            "terminal retirement attestation readback mismatch"
+        )
+    attestation_core = {
+        key: value
+        for key, value in attestation.items()
+        if key not in ("attestation_digest", "broker_signature")
+    }
+    attestation_digest = _domain_digest(
+        b"agent-harness/terminal-retirement-attestation/v1\0",
+        attestation_core,
+    )
+    if (
+        attestation.get("attestation_digest") != attestation_digest
+        or attestation.get("installation_id") != installation_id
+        or attestation.get("broker_code_identity") != backend.code_identity
+        or attestation.get("anchor_namespace") != context["namespace"]
+        or attestation.get("anchor_generation") != generation
+        or attestation.get("anchor_commitment") != commitment
+        or attestation.get("terminal_pin_locator")
+        != TERMINAL_PIN_LOCATOR
+    ):
+        raise AuthorityError(
+            "terminal retirement attestation binding mismatch"
+        )
+    for field in (
+        "attestation_digest",
+        "receipt_public_key_digest",
+        "helper_finalizer_digest",
+    ):
+        value = attestation.get(field)
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise AuthorityError(f"retirement {field} is invalid")
+    for field in (
+        "authority_era",
+        "helper_object_identity",
+        "broker_signature",
+    ):
+        value = attestation.get(field)
+        if not isinstance(value, str) or not value:
+            raise AuthorityError(f"retirement {field} is invalid")
+
+    pin = {
+        "installation_id": installation_id,
+        "authority_era": attestation["authority_era"],
+        "attestation_digest": attestation_digest,
+        "receipt_public_key_digest":
+            attestation["receipt_public_key_digest"],
+        "helper_object_identity": attestation["helper_object_identity"],
+        "helper_finalizer_digest":
+            attestation["helper_finalizer_digest"],
+    }
+    signed_pin = {
+        **pin,
+        "broker_signature": attestation["broker_signature"],
+    }
+    if not backend.verify_bootstrap_manifest(signed_pin):
+        raise CapabilityFailure(
+            "terminal retirement broker signature verification failed"
+        )
+
+    finalizers = plan.get("finalizers")
+    expected_finalizer = {
+        "kind": "authority-retirement",
+        "attestation_digest": attestation_digest,
+        "receipt_public_key_digest": pin["receipt_public_key_digest"],
+        "helper_object_identity": pin["helper_object_identity"],
+        "helper_finalizer_digest": pin["helper_finalizer_digest"],
+        "authority_era": pin["authority_era"],
+        "terminal_pin_locator": TERMINAL_PIN_LOCATOR,
+        "broker_code_identity": backend.code_identity,
+        "anchor_namespace": context["namespace"],
+        "anchor_generation": generation,
+        "anchor_commitment": commitment,
+        "anchor_receipt_digest": anchor_receipt_digest,
+    }
+    if (
+        not isinstance(finalizers, list)
+        or finalizers != [expected_finalizer]
+        or plan.get("owned_object_identities")
+        != [pin["helper_object_identity"]]
+        or plan.get("containment_proof_digests")
+        != [pin["helper_finalizer_digest"]]
+    ):
+        raise AuthorityError("retirement finalizer binding mismatch")
+
+    plan_digest = plan.get("plan_digest")
+    summary_document = {
+        **pin,
+        "finalization_plan_digest": plan_digest,
+        "anchor_receipt_digest": anchor_receipt_digest,
+        "terminal_pin_locator": TERMINAL_PIN_LOCATOR,
+    }
+    summary = canonical_json_bytes(summary_document).decode()
+    if set(approval) != {"envelope", "summary", "signature"}:
+        raise AuthorityError("structured retirement approval is malformed")
+    envelope = approval["envelope"]
+    if not isinstance(envelope, Mapping) or approval["summary"] != summary:
+        raise AuthorityError("retirement approval summary mismatch")
+    expected_envelope_fields = {
+        "schema",
+        "schema_version",
+        "installation_id",
+        "intent_digest",
+        "predecessor_task_event_hash",
+        "expires_at",
+    }
+    if (
+        set(envelope) != expected_envelope_fields
+        or envelope.get("schema")
+        != "agent-harness/external-write-envelope"
+        or envelope.get("schema_version") != 1
+        or envelope.get("installation_id") != installation_id
+        or envelope.get("intent_digest")
+        != hashlib.sha256(summary.encode()).hexdigest()
+        or envelope.get("predecessor_task_event_hash")
+        != anchor_receipt_digest
+    ):
+        raise AuthorityError("retirement approval envelope mismatch")
+    try:
+        expires_at = datetime.fromisoformat(
+            envelope["expires_at"].removesuffix("Z") + "+00:00"
+        ).timestamp()
+    except (AttributeError, TypeError, ValueError) as error:
+        raise AuthorityError("retirement approval expiry is invalid") from error
+    lifetime = expires_at - float(time.time() if now is None else now)
+    if lifetime <= 0 or lifetime > 900:
+        raise AuthorityError("retirement approval expiry is invalid")
+    if not approval_authority.verify_public_key(
+        envelope,
+        summary,
+        approval["signature"],
+    ):
+        raise CapabilityFailure("retirement native approval verification failed")
+
+    anchor_receipt.consume(
+        expected_installation_id=installation_id,
+        expected_generation=generation,
+        expected_anchor_commitment=commitment,
+    )
+    finalization.consume(
+        expected_installation_id=installation_id,
+        expected_generation=generation,
+        expected_root=finalization.root,
+        expected_anchor_commitment=commitment,
+    )
+    return VerifiedAuthorityRetirementPlan(
+        _RETIREMENT_TOKEN,
+        signed_pin,
     )

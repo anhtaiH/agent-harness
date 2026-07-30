@@ -449,6 +449,40 @@ class IntegrityAuthorityTests(unittest.TestCase):
                     with self.assertRaises((IntegrityError, SchemaError)):
                         getattr(self.authority, method)(arbitrary)
 
+    def test_mac_verifier_rechecks_phase_semantics(self):
+        receipt = new_document(
+            "state-anchor-receipt",
+            INSTALLATION_ID,
+            created_at=CREATED_AT,
+            anchor_namespace="agent-harness.anchor.v1",
+            anchor_backend_id="native-keychain-anchor-v1",
+            receipt_key_id="broker-receipt:v1",
+            transition_domain="installation-transaction",
+            transition_digest="5" * 64,
+            old_generation=GENERATION - 1,
+            old_commitment="6" * 64,
+            new_generation=GENERATION + 1,
+            new_commitment=ANCHOR_COMMITMENT,
+            operation_id="semantic-gap",
+            broker_receipt="signed-receipt-v1",
+        )
+        receipt["mac"] = hmac.new(
+            self.secret,
+            b"agent-harness/mac/state-anchor-receipt/v1\0"
+            + canonical_json_bytes(receipt),
+            hashlib.sha256,
+        ).hexdigest()
+        with self.assertRaisesRegex(
+            IntegrityError,
+            "advance by one",
+        ):
+            self.authority.verify_state_anchor_receipt(
+                receipt,
+                expected_installation_id=INSTALLATION_ID,
+                expected_generation=GENERATION + 1,
+                expected_anchor_commitment=ANCHOR_COMMITMENT,
+            )
+
     def test_complete_install_plan_verification_returns_phase_specific_type(self):
         raw = new_document(
             "install-plan",
