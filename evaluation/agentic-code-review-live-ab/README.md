@@ -35,6 +35,25 @@ was not applied, because model quota ran out before it could be re-validated.
 | `artifacts/CHANGELOG.md` | harness changes and integrity fixes |
 | `harness/` | the runner, blind judge, escalation selector, and stats scripts |
 | `raw/<stage>/` | run manifests, per-stage stats, judge verdicts and sealed A/B mappings |
+| `agent-handoff/` | briefing package for an agent working on the skill (see below) |
+| `agentic-code-review-eval-feedback-v1.zip` | the same package, zipped for handoff |
+
+## Agent handoff package
+
+`agent-handoff/` is written for a *different agent* that is iterating on the
+skill. It is deliberately structured to resist the failure mode where a
+receiving model accepts an evaluation because it arrives with numbers:
+
+- `START_HERE_AGENT_BRIEF.md` — instructions to verify before believing, our
+  own confidence rating per finding, and a falsification test for each
+- `verify_our_claims.py` — recomputes every headline number from the raw
+  verdict files and prints MATCH/MISMATCH against hard-coded claims
+- `CRITIQUE_THIS_EVALUATION.md` — eleven arguments against our own findings
+- `REPRODUCE_FINDING_4.md` — exact method for the one judge-independent finding,
+  with its known weaknesses and an explicit bar for declaring it inflated
+- `PROPOSED_CHANGE_UNVALIDATED.md` — candidate fix with five reasons to reject it
+- `evidence/paired-samples/` — six full pairs **where the control won**
+- `evidence/narration-leak/` and `evidence/counterexamples/` — verbatim outputs
 
 Full raw run directories (prompts, CLI envelopes, responses, timings) were
 retained in the session scratchpad; the resumable manifests needed to
