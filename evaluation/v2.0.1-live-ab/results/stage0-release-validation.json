@@ -1,0 +1,45 @@
+{
+  "all_passed": true,
+  "checks": [
+    {
+      "name": "baseline-hashes",
+      "passed": true,
+      "duration_seconds": 0.015
+    },
+    {
+      "name": "benchmark",
+      "passed": true,
+      "duration_seconds": 0.218
+    },
+    {
+      "name": "coverage",
+      "passed": true,
+      "duration_seconds": 0.074
+    },
+    {
+      "name": "live-ab-100-dry-run",
+      "passed": true,
+      "duration_seconds": 0.859
+    },
+    {
+      "name": "pandoc-markdown",
+      "passed": true,
+      "duration_seconds": 1.135
+    },
+    {
+      "name": "pytest",
+      "passed": true,
+      "duration_seconds": 6.736
+    },
+    {
+      "name": "validate-entropy-skill",
+      "passed": true,
+      "duration_seconds": 0.143
+    },
+    {
+      "name": "validate-review-skill",
+      "passed": true,
+      "duration_seconds": 0.214
+    }
+  ]
+}

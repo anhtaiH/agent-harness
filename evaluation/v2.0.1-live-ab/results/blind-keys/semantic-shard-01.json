@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "golden-01-authz-bypass",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-01-authz-bypass",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-01-authz-bypass",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-06-duplicate-existing-thread",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-06-duplicate-existing-thread",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-06-duplicate-existing-thread",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-11-keyboard-disabled-action",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-11-keyboard-disabled-action",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-11-keyboard-disabled-action",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-16-n-plus-one",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-16-n-plus-one",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-16-n-plus-one",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-21-supply-chain-script",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-21-supply-chain-script",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-21-supply-chain-script",
+    "run": 3,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

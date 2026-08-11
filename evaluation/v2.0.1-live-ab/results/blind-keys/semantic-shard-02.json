@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "golden-02-broken-stacked-slice",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-02-broken-stacked-slice",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-02-broken-stacked-slice",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-07-dynamic-registry-not-dead",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-07-dynamic-registry-not-dead",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-07-dynamic-registry-not-dead",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-12-large-cohesive-module",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-12-large-cohesive-module",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-12-large-cohesive-module",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-17-not-null-before-backfill",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-17-not-null-before-backfill",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-17-not-null-before-backfill",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-22-tenant-cache-leak",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-22-tenant-cache-leak",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-22-tenant-cache-leak",
+    "run": 3,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

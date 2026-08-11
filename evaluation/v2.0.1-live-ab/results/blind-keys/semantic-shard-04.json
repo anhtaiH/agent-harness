@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "golden-04-docs-typo-clean",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-04-docs-typo-clean",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-04-docs-typo-clean",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-09-fix-verification-clean",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-09-fix-verification-clean",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-09-fix-verification-clean",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-14-malicious-purpose-carrier",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-14-malicious-purpose-carrier",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-14-malicious-purpose-carrier",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-19-required-api-field",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-19-required-api-field",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-19-required-api-field",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-24-webhook-idempotency",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-24-webhook-idempotency",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-24-webhook-idempotency",
+    "run": 3,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

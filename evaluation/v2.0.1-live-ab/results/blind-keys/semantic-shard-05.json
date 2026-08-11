@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "golden-05-duplicate-business-rule",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-05-duplicate-business-rule",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-05-duplicate-business-rule",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-10-invalid-fixture",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-10-invalid-fixture",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-10-invalid-fixture",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-15-missing-generated-runtime",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-15-missing-generated-runtime",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-15-missing-generated-runtime",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-20-stale-flag-still-rollback-root",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-20-stale-flag-still-rollback-root",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-20-stale-flag-still-rollback-root",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-25-wrong-test-harness",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-25-wrong-test-harness",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-25-wrong-test-harness",
+    "run": 3,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

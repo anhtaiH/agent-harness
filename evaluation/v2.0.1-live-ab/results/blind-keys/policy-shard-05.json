@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "005-01-formatting_only-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "010-01-feature_flag_default-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "015-01-package_manager_migration-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "020-01-sdk_method_addition-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "025-01-nullable_column_add-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "030-01-data_retention_policy-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "035-01-tenant_cache_leak-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "040-01-rate_limit_boundary-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "045-01-transaction_partial_failure-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "050-01-bundle_size_regression-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "055-01-focus_loss_modal-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "060-01-stale_selection_async-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "065-01-volatile_dependency_adapter-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "070-01-dynamic_registry_dead_code-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "075-01-mocked_provider_contract-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

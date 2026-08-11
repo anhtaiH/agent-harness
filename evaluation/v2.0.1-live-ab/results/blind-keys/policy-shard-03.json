@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "003-01-ui_copy_only-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "008-01-generated_snapshot_refresh-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "013-01-release_script_order-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "018-01-api_required_field_break-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "023-01-generated_client_version_skew-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "028-01-dual_read_write_window-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "033-01-authorization_bypass-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "038-01-secret_in_build_log-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "043-01-cache_key_scope-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "048-01-observability_new_failure-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "053-01-parallelism_ordering_tradeoff-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "058-01-preview_runtime_parity-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "063-01-incidental_similarity-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "068-01-agent_iteration_residue-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "073-01-generic_utils_dumping_ground-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

@@ -1,0 +1,149 @@
+{
+  "stage": "policy",
+  "runs_with_telemetry": {
+    "old_prompt": 75,
+    "new_skill": 75
+  },
+  "permission_denials": "none",
+  "models_seen": {
+    "old_prompt:claude-haiku-4-5-20251001": 75,
+    "old_prompt:claude-sonnet-5": 75,
+    "new_skill:claude-haiku-4-5-20251001": 75,
+    "new_skill:claude-sonnet-5": 75
+  },
+  "telemetry_errors": "none",
+  "per_variant": {
+    "old_prompt": {
+      "duration_ms": {
+        "n": 75,
+        "mean": 19774.5867,
+        "median": 18642,
+        "p90": 25158,
+        "max": 32993,
+        "sum": 1483094
+      },
+      "api_ms": {
+        "n": 75,
+        "mean": 21387.7867,
+        "median": 20842,
+        "p90": 26790,
+        "max": 34510,
+        "sum": 1604084
+      },
+      "turns": {
+        "n": 75,
+        "mean": 5.1067,
+        "median": 5,
+        "p90": 7,
+        "max": 8,
+        "sum": 383
+      },
+      "cost_usd": {
+        "n": 75,
+        "mean": 0.25,
+        "median": 0.2526,
+        "p90": 0.28783230000000004,
+        "max": 0.44991949999999997,
+        "sum": 18.7482
+      },
+      "out_tokens": {
+        "n": 75,
+        "mean": 1224.1467,
+        "median": 1184,
+        "p90": 1530,
+        "max": 1862,
+        "sum": 91811
+      },
+      "cache_read": {
+        "n": 75,
+        "mean": 190523.6267,
+        "median": 194952,
+        "p90": 247929,
+        "max": 341923,
+        "sum": 14289272
+      },
+      "cache_create": {
+        "n": 75,
+        "mean": 26420.0933,
+        "median": 27610,
+        "p90": 29915,
+        "max": 55194,
+        "sum": 1981507
+      },
+      "total_billable_in": {
+        "n": 75,
+        "mean": 26429.4267,
+        "median": 27618,
+        "p90": 29925,
+        "max": 55204,
+        "sum": 1982207
+      }
+    },
+    "new_skill": {
+      "duration_ms": {
+        "n": 75,
+        "mean": 33671.6667,
+        "median": 33072,
+        "p90": 43778,
+        "max": 49184,
+        "sum": 2525375
+      },
+      "api_ms": {
+        "n": 75,
+        "mean": 34593.16,
+        "median": 33862,
+        "p90": 44511,
+        "max": 49671,
+        "sum": 2594487
+      },
+      "turns": {
+        "n": 75,
+        "mean": 9.24,
+        "median": 9,
+        "p90": 13,
+        "max": 15,
+        "sum": 693
+      },
+      "cost_usd": {
+        "n": 75,
+        "mean": 0.2174,
+        "median": 0.203,
+        "p90": 0.29346920000000004,
+        "max": 0.3291907,
+        "sum": 16.3039
+      },
+      "out_tokens": {
+        "n": 75,
+        "mean": 2169.44,
+        "median": 2051,
+        "p90": 2886,
+        "max": 3701,
+        "sum": 162708
+      },
+      "cache_read": {
+        "n": 75,
+        "mean": 250890.3467,
+        "median": 226443,
+        "p90": 348818,
+        "max": 435469,
+        "sum": 18816776
+      },
+      "cache_create": {
+        "n": 75,
+        "mean": 18126.1867,
+        "median": 17289,
+        "p90": 24767,
+        "max": 28348,
+        "sum": 1359464
+      },
+      "total_billable_in": {
+        "n": 75,
+        "mean": 18143.2533,
+        "median": 17307,
+        "p90": 24787,
+        "max": 28368,
+        "sum": 1360744
+      }
+    }
+  }
+}

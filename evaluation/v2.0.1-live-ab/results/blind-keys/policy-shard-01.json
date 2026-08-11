@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "001-01-docs_typo-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "006-01-test_name_cleanup-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "011-01-environment_variable_add-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "016-01-dependency_major_upgrade-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "021-01-cli_flag_semantics-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "026-01-not_null_before_backfill-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "031-01-schema_default_change-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "036-01-audit_event_gap-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "041-01-webhook_idempotency-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "046-01-stale_cache_after_transfer-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "051-01-memory_retention_listener-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "056-01-empty_state_copy-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "061-01-localization_fallback-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "066-01-large_cohesive_module-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "071-01-dependency_inflation-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

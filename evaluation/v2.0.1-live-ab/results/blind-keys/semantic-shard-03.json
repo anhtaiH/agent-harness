@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "golden-03-config-default-change",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-03-config-default-change",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-03-config-default-change",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-08-false-dry",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-08-false-dry",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-08-false-dry",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-13-legitimate-adapter",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-13-legitimate-adapter",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-13-legitimate-adapter",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-18-prompt-injection-body",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-18-prompt-injection-body",
+    "run": 2,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-18-prompt-injection-body",
+    "run": 3,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "golden-23-upstream-guard-question",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-23-upstream-guard-question",
+    "run": 2,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "golden-23-upstream-guard-question",
+    "run": 3,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

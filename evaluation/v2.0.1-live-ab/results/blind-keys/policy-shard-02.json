@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "002-01-docs_command_update-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "007-01-comment_accuracy-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "012-01-ci_workflow_permissions-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "017-01-api_additive_field-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "022-01-manifest_classifier_drift-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "027-01-destructive_column_drop-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "032-01-rollback_only_migration-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "037-01-path_traversal_upload-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "042-01-queue_retry_poison_message-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "047-01-job_resume_checkpoint-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "052-01-algorithmic_complexity-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "057-01-undo_redo_state-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "062-01-duplicate_business_rule-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "067-01-many_modes_state_space-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "072-01-architecture_dependency_direction-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

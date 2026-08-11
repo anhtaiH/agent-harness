@@ -1,0 +1,92 @@
+[
+  {
+    "case_id": "004-01-mechanical_rename-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "009-01-config_default_runtime_change-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "014-01-kubernetes_rollout-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "019-01-event_payload_rename-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "024-01-static_import_missing_artifact-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "029-01-backfill_idempotency-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "034-01-authentication_session_fix-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "039-01-privacy_field_exposure-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "044-01-race_condition_ui_state-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "049-01-n_plus_one_query-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "054-01-keyboard_disabled_action-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "059-01-screen_reader_label-initial_preview",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "064-01-shallow_wrapper-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "069-01-stale_feature_flag-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "074-01-jsdom_browser_mismatch-initial_preview",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

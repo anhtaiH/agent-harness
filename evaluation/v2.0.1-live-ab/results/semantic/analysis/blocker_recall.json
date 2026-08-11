@@ -1,0 +1,21 @@
+{
+  "metric": "blocker_recall",
+  "metric_direction": "higher",
+  "effect_definition": "treatment-control",
+  "paired_n": 51,
+  "control_rate": 0.9803921568627451,
+  "treatment_rate": 0.9411764705882353,
+  "effect": -0.039215686274509776,
+  "confidence_interval_95": [
+    -0.11764705882352944,
+    0.039215686274509776
+  ],
+  "noninferiority_margin": 0.05,
+  "decision": "not_demonstrated",
+  "discordant_pairs": {
+    "treatment_only_correct": 1,
+    "control_only_correct": 3
+  },
+  "exact_two_sided_sign_mcnemar_p": 0.625,
+  "interpretation": "Non-significance is not evidence of non-inferiority; the lower paired confidence bound must exceed the predefined negative margin."
+}

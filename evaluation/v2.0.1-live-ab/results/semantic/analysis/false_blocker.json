@@ -1,0 +1,21 @@
+{
+  "metric": "false_blocker",
+  "metric_direction": "lower",
+  "effect_definition": "control-treatment",
+  "paired_n": 75,
+  "control_rate": 0.013333333333333334,
+  "treatment_rate": 0.04,
+  "effect": -0.026666666666666665,
+  "confidence_interval_95": [
+    -0.08,
+    0.026666666666666665
+  ],
+  "noninferiority_margin": 0.02,
+  "decision": "not_demonstrated",
+  "discordant_pairs": {
+    "treatment_only_correct": 3,
+    "control_only_correct": 1
+  },
+  "exact_two_sided_sign_mcnemar_p": 0.625,
+  "interpretation": "Non-significance is not evidence of non-inferiority; the lower paired confidence bound must exceed the predefined negative margin."
+}

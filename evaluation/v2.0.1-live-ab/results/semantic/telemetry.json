@@ -1,0 +1,149 @@
+{
+  "stage": "semantic",
+  "runs_with_telemetry": {
+    "old_prompt": 75,
+    "new_skill": 75
+  },
+  "permission_denials": "none",
+  "models_seen": {
+    "old_prompt:claude-haiku-4-5-20251001": 75,
+    "old_prompt:claude-sonnet-5": 75,
+    "new_skill:claude-haiku-4-5-20251001": 75,
+    "new_skill:claude-sonnet-5": 75
+  },
+  "telemetry_errors": "none",
+  "per_variant": {
+    "old_prompt": {
+      "duration_ms": {
+        "n": 75,
+        "mean": 44114.6667,
+        "median": 42856,
+        "p90": 68166,
+        "max": 81681,
+        "sum": 3308600
+      },
+      "api_ms": {
+        "n": 75,
+        "mean": 45648.44,
+        "median": 44098,
+        "p90": 69303,
+        "max": 82974,
+        "sum": 3423633
+      },
+      "turns": {
+        "n": 75,
+        "mean": 4.9333,
+        "median": 5,
+        "p90": 6,
+        "max": 10,
+        "sum": 370
+      },
+      "cost_usd": {
+        "n": 75,
+        "mean": 0.3296,
+        "median": 0.312,
+        "p90": 0.4210554,
+        "max": 0.5519989000000001,
+        "sum": 24.7233
+      },
+      "out_tokens": {
+        "n": 75,
+        "mean": 3481.04,
+        "median": 3336,
+        "p90": 5640,
+        "max": 6561,
+        "sum": 261078
+      },
+      "cache_read": {
+        "n": 75,
+        "mean": 202858.3067,
+        "median": 198300,
+        "p90": 295449,
+        "max": 424682,
+        "sum": 15214373
+      },
+      "cache_create": {
+        "n": 75,
+        "mean": 33439.24,
+        "median": 30393,
+        "p90": 39094,
+        "max": 58667,
+        "sum": 2507943
+      },
+      "total_billable_in": {
+        "n": 75,
+        "mean": 33449.0533,
+        "median": 30403,
+        "p90": 39108,
+        "max": 58679,
+        "sum": 2508679
+      }
+    },
+    "new_skill": {
+      "duration_ms": {
+        "n": 75,
+        "mean": 86364.0667,
+        "median": 84957,
+        "p90": 116968,
+        "max": 151123,
+        "sum": 6477305
+      },
+      "api_ms": {
+        "n": 75,
+        "mean": 87481.6133,
+        "median": 85645,
+        "p90": 117540,
+        "max": 151519,
+        "sum": 6561121
+      },
+      "turns": {
+        "n": 75,
+        "mean": 17.0533,
+        "median": 17,
+        "p90": 20,
+        "max": 24,
+        "sum": 1279
+      },
+      "cost_usd": {
+        "n": 75,
+        "mean": 0.4543,
+        "median": 0.4497,
+        "p90": 0.5573053,
+        "max": 0.6944083,
+        "sum": 34.076
+      },
+      "out_tokens": {
+        "n": 75,
+        "mean": 7011.5467,
+        "median": 6725,
+        "p90": 9345,
+        "max": 12739,
+        "sum": 525866
+      },
+      "cache_read": {
+        "n": 75,
+        "mean": 398277.9333,
+        "median": 394937,
+        "p90": 500078,
+        "max": 647091,
+        "sum": 29870845
+      },
+      "cache_create": {
+        "n": 75,
+        "mean": 38143.9333,
+        "median": 37659,
+        "p90": 45919,
+        "max": 57033,
+        "sum": 2860795
+      },
+      "total_billable_in": {
+        "n": 75,
+        "mean": 38164.68,
+        "median": 37677,
+        "p90": 45941,
+        "max": 57057,
+        "sum": 2862351
+      }
+    }
+  }
+}
