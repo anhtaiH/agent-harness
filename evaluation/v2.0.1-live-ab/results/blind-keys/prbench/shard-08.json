@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "swe-prbench-agents__3608",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-altair__3936",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-autogluon__5586",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-chia-blockchain__20318",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-coreos-assembler__4359",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-kale__601",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-openbao__2307",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-openbao__2362",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-ratelimit__996",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-spyder__25609",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

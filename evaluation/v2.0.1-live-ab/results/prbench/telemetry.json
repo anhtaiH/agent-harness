@@ -1,0 +1,149 @@
+{
+  "stage": "prbench",
+  "runs_with_telemetry": {
+    "old_prompt": 100,
+    "new_skill": 100
+  },
+  "permission_denials": "none",
+  "models_seen": {
+    "old_prompt:claude-haiku-4-5-20251001": 100,
+    "old_prompt:claude-sonnet-5": 100,
+    "new_skill:claude-haiku-4-5-20251001": 100,
+    "new_skill:claude-sonnet-5": 100
+  },
+  "telemetry_errors": "none",
+  "per_variant": {
+    "old_prompt": {
+      "duration_ms": {
+        "n": 100,
+        "mean": 206294.26,
+        "median": 191903.5,
+        "p90": 323278,
+        "max": 598075,
+        "sum": 20629426
+      },
+      "api_ms": {
+        "n": 100,
+        "mean": 207613.19,
+        "median": 193520.0,
+        "p90": 324382,
+        "max": 599144,
+        "sum": 20761319
+      },
+      "turns": {
+        "n": 100,
+        "mean": 9.17,
+        "median": 7.0,
+        "p90": 15,
+        "max": 40,
+        "sum": 917
+      },
+      "cost_usd": {
+        "n": 100,
+        "mean": 0.7718,
+        "median": 0.6824,
+        "p90": 1.1432096999999999,
+        "max": 2.4494999,
+        "sum": 77.1752
+      },
+      "out_tokens": {
+        "n": 100,
+        "mean": 19115.9,
+        "median": 17241.5,
+        "p90": 31710,
+        "max": 51864,
+        "sum": 1911590
+      },
+      "cache_read": {
+        "n": 100,
+        "mean": 476427.36,
+        "median": 315000.5,
+        "p90": 839405,
+        "max": 3191463,
+        "sum": 47642736
+      },
+      "cache_create": {
+        "n": 100,
+        "mean": 54205.9,
+        "median": 50805.5,
+        "p90": 76321,
+        "max": 116323,
+        "sum": 5420590
+      },
+      "total_billable_in": {
+        "n": 100,
+        "mean": 54224.2,
+        "median": 50822.5,
+        "p90": 76339,
+        "max": 116397,
+        "sum": 5422420
+      }
+    },
+    "new_skill": {
+      "duration_ms": {
+        "n": 100,
+        "mean": 254621.13,
+        "median": 245186.5,
+        "p90": 364197,
+        "max": 772712,
+        "sum": 25462113
+      },
+      "api_ms": {
+        "n": 100,
+        "mean": 254114.8,
+        "median": 245417.0,
+        "p90": 361489,
+        "max": 773347,
+        "sum": 25411480
+      },
+      "turns": {
+        "n": 100,
+        "mean": 20.71,
+        "median": 19.0,
+        "p90": 27,
+        "max": 50,
+        "sum": 2071
+      },
+      "cost_usd": {
+        "n": 100,
+        "mean": 0.9548,
+        "median": 0.9011,
+        "p90": 1.386979,
+        "max": 1.9406792000000006,
+        "sum": 95.4837
+      },
+      "out_tokens": {
+        "n": 100,
+        "mean": 21816.92,
+        "median": 21021.0,
+        "p90": 32321,
+        "max": 39715,
+        "sum": 2181692
+      },
+      "cache_read": {
+        "n": 100,
+        "mean": 849945.02,
+        "median": 745741.5,
+        "p90": 1451077,
+        "max": 2869264,
+        "sum": 84994502
+      },
+      "cache_create": {
+        "n": 100,
+        "mean": 61950.15,
+        "median": 59742.5,
+        "p90": 84838,
+        "max": 98422,
+        "sum": 6195015
+      },
+      "total_billable_in": {
+        "n": 100,
+        "mean": 61984.23,
+        "median": 59774.5,
+        "p90": 84864,
+        "max": 98456,
+        "sum": 6198423
+      }
+    }
+  }
+}

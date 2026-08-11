@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "swe-prbench-chia-blockchain__20321",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-coreos-assembler__4386",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-espnet__6352",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-metaflow__2653",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__3113",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__3328",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__3428",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-prowler__9606",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-sktime__9042",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-stylelint__8953",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

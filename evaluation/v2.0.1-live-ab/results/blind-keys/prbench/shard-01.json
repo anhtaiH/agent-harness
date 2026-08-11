@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "swe-prbench-agents__3948",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-agents__4713",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-chia-blockchain__20317",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-dask__12144",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-firebase-android-sdk__7617",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-node-postgres__3547",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-protocompile__590",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-prowler__9865",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-server__8569",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-vitest__9152",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

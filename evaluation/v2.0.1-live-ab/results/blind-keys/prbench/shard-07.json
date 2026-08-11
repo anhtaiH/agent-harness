@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "swe-prbench-deepeval__2394",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-effect__5952",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-litgpt__2188",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-nessie__11676",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-numba__10366",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-openbao__1906",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-protocompile__569",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-prowler__9718",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-spyder__24990",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-spyder__25460",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "swe-prbench-chia-blockchain__20099",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-deepchem__4601",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-espnet__6356",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__2974",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__3025",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-pipecat__3598",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-spyder__25481",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  },
+  {
+    "case_id": "swe-prbench-stylelint__8985",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-vitest__9521",
+    "run": 1,
+    "A": "old_prompt",
+    "B": "new_skill"
+  },
+  {
+    "case_id": "swe-prbench-zod__5578",
+    "run": 1,
+    "A": "new_skill",
+    "B": "old_prompt"
+  }
+]

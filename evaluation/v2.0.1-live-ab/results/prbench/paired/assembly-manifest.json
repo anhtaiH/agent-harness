@@ -1,0 +1,30 @@
+{
+  "counts": {
+    "pairs_total": 100,
+    "pairs_graded": 100,
+    "tech_pref_tie": 43,
+    "author_pref_tie": 37,
+    "tech_pref_old_prompt": 41,
+    "author_pref_old_prompt": 35,
+    "author_pref_new_skill": 28,
+    "tech_pref_new_skill": 16
+  },
+  "paired_rows_written": {
+    "human_recall": 86,
+    "any_fabricated": 100,
+    "confirmed_count": 100,
+    "plausible_count": 100,
+    "readability_fail": 100,
+    "output_contract_pass": 100,
+    "technical_preference": 100,
+    "author_preference": 100
+  },
+  "judge_agreement": {
+    "pairs_with_both_verdicts": 100,
+    "agreeing": 57,
+    "disagreeing": 43,
+    "agreement_rate": 0.57,
+    "note": "No human adjudication available in this environment; disagreements are reported unadjudicated."
+  },
+  "attrition": []
+}
