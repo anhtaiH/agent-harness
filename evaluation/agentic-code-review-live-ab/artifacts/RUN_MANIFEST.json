@@ -1,0 +1,88 @@
+{
+  "stages": {
+    "stage1-golden": {
+      "label": "Stage 1 \u2014 25 golden PR fixtures",
+      "cases": 25,
+      "repetitions": 3,
+      "planned_runs": 150,
+      "attempted_units": 150,
+      "usable_pairs": 69,
+      "planned_pairs": 75,
+      "distinct_cases_with_pair": 24,
+      "runner_model": "claude-fable-5",
+      "effort": "high",
+      "judges": {
+        "primary": 69,
+        "secondary": 69
+      },
+      "judge_disagreements": 26,
+      "seed": 20260810,
+      "timeout_s": 1800,
+      "allowed_tools": "Read,Grep,Glob,Task",
+      "disallowed_tools": "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Skill,SlashCommand,KillShell,BashOutput",
+      "skill_sha": "bebf9b33c35b25ef1e8e8dbf99bfc8f8fc8fc3de9be609f1b9a85fb0304ed1a3",
+      "baseline_sha": "fcf5ad86139faf14f96d34c41e59b3d597aaf2cf63991539d7fa7067c68450b2"
+    },
+    "stage2-official": {
+      "label": "Stage 2 \u2014 100 official-style evals",
+      "cases": 100,
+      "repetitions": 3,
+      "planned_runs": 600,
+      "attempted_units": 538,
+      "usable_pairs": 162,
+      "planned_pairs": 300,
+      "distinct_cases_with_pair": 97,
+      "runner_model": "claude-fable-5",
+      "effort": "high",
+      "judges": {
+        "primary": 77,
+        "secondary": 162
+      },
+      "judge_disagreements": 25,
+      "seed": 20260811,
+      "timeout_s": 900,
+      "allowed_tools": "Read,Grep,Glob,Task",
+      "disallowed_tools": "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Skill,SlashCommand,KillShell,BashOutput",
+      "skill_sha": "bebf9b33c35b25ef1e8e8dbf99bfc8f8fc8fc3de9be609f1b9a85fb0304ed1a3",
+      "baseline_sha": "fcf5ad86139faf14f96d34c41e59b3d597aaf2cf63991539d7fa7067c68450b2"
+    },
+    "stage3-real-prs": {
+      "label": "Stage 3 \u2014 30 real SWE-PRBench PRs",
+      "cases": 30,
+      "repetitions": 1,
+      "planned_runs": 60,
+      "attempted_units": 60,
+      "usable_pairs": 27,
+      "planned_pairs": 30,
+      "distinct_cases_with_pair": 27,
+      "runner_model": "claude-opus-5",
+      "effort": "high",
+      "judges": {},
+      "judge_disagreements": 0,
+      "seed": 20260812,
+      "timeout_s": 900,
+      "allowed_tools": "Read,Grep,Glob,Task",
+      "disallowed_tools": "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Skill,SlashCommand,KillShell,BashOutput",
+      "skill_sha": "bebf9b33c35b25ef1e8e8dbf99bfc8f8fc8fc3de9be609f1b9a85fb0304ed1a3",
+      "baseline_sha": "fcf5ad86139faf14f96d34c41e59b3d597aaf2cf63991539d7fa7067c68450b2"
+    }
+  },
+  "frozen_control": {
+    "preview_prompt_v19": "fcf5ad86139faf14f96d34c41e59b3d597aaf2cf63991539d7fa7067c68450b2",
+    "submit_prompt_v19": "3c51fa4dcc29778449d6e6fd2b13e36530eb492487faeb42cf4eb87ecf6f636a",
+    "verified_unmodified": true
+  },
+  "package": {
+    "skill_md": "bebf9b33c35b25ef1e8e8dbf99bfc8f8fc8fc3de9be609f1b9a85fb0304ed1a3",
+    "version": "2.0.0",
+    "modified_during_evaluation": false
+  },
+  "harness": {
+    "build_artifacts.py": "76d7f174147c68f3e5eb127ce29dd31b92fbf75aa3ee8928a6b0d1ae919fc9f1",
+    "build_golden_evals.py": "9ca5a0ff37a585198864f88f0a87a275abd348b57bdae01624fe707ef9226efc",
+    "judge_ab.py": "cfa7df7ae0854cb4e12eb24a586400c8d0c5f675fdec3986ad29587a9780057a",
+    "run_ab_parallel.py": "caff55df96daa955a945be64b172ea66a87ed21f65c9a8c6681b4f9c8e829791",
+    "select_escalations.py": "bf2380f2dbe9b63f7b84b1215496c8147a9dbade1b711381f9feff08dc2ded3a",
+    "stats_ab.py": "0ab3fadc669e76191bd0415f708a26309e3df5b8a8d1f8a143b4aa2e3ff973bc"
+  }
+}

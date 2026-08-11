@@ -1,0 +1,665 @@
+{
+  "skill_name": "reviewing-pull-requests",
+  "evals": [
+    {
+      "id": "swe-prbench-altair__3936",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/altair__3936.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "altair__3936",
+        "repo": "vega/altair",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 2
+      }
+    },
+    {
+      "id": "swe-prbench-autogluon__5586",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/autogluon__5586.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "autogluon__5586",
+        "repo": "autogluon/autogluon",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 4
+      }
+    },
+    {
+      "id": "swe-prbench-deepchem__4601",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/deepchem__4601.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "deepchem__4601",
+        "repo": "deepchem/deepchem",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 1
+      }
+    },
+    {
+      "id": "swe-prbench-espnet__6248",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/espnet__6248.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "espnet__6248",
+        "repo": "espnet/espnet",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 2
+      }
+    },
+    {
+      "id": "swe-prbench-espnet__6278",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/espnet__6278.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "espnet__6278",
+        "repo": "espnet/espnet",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 7
+      }
+    },
+    {
+      "id": "swe-prbench-espnet__6325",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/espnet__6325.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "espnet__6325",
+        "repo": "espnet/espnet",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 4
+      }
+    },
+    {
+      "id": "swe-prbench-kedro__5107",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/kedro__5107.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "kedro__5107",
+        "repo": "kedro-org/kedro",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 22
+      }
+    },
+    {
+      "id": "swe-prbench-linkding__1261",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/linkding__1261.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "linkding__1261",
+        "repo": "sissbruecker/linkding",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 3
+      }
+    },
+    {
+      "id": "swe-prbench-metaflow__2653",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/metaflow__2653.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "metaflow__2653",
+        "repo": "Netflix/metaflow",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 5
+      }
+    },
+    {
+      "id": "swe-prbench-nessie__11676",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/nessie__11676.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "nessie__11676",
+        "repo": "projectnessie/nessie",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 9
+      }
+    },
+    {
+      "id": "swe-prbench-numba__10366",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/numba__10366.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "numba__10366",
+        "repo": "numba/numba",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 4
+      }
+    },
+    {
+      "id": "swe-prbench-openbao__2362",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/openbao__2362.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "openbao__2362",
+        "repo": "openbao/openbao",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 10
+      }
+    },
+    {
+      "id": "swe-prbench-pip__13482",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/pip__13482.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "pip__13482",
+        "repo": "pypa/pip",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 10
+      }
+    },
+    {
+      "id": "swe-prbench-pipecat__3025",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/pipecat__3025.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "pipecat__3025",
+        "repo": "pipecat-ai/pipecat",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 5
+      }
+    },
+    {
+      "id": "swe-prbench-pipecat__3428",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/pipecat__3428.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "pipecat__3428",
+        "repo": "pipecat-ai/pipecat",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 3
+      }
+    },
+    {
+      "id": "swe-prbench-protocompile__645",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/protocompile__645.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "protocompile__645",
+        "repo": "bufbuild/protocompile",
+        "difficulty": "Type3_Latent_Candidate",
+        "human_comment_count": 6
+      }
+    },
+    {
+      "id": "swe-prbench-qutebrowser__8845",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/qutebrowser__8845.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "qutebrowser__8845",
+        "repo": "qutebrowser/qutebrowser",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 4
+      }
+    },
+    {
+      "id": "swe-prbench-ratelimit__996",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/ratelimit__996.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "ratelimit__996",
+        "repo": "envoyproxy/ratelimit",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 7
+      }
+    },
+    {
+      "id": "swe-prbench-sktime__9042",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/sktime__9042.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "sktime__9042",
+        "repo": "sktime/sktime",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 8
+      }
+    },
+    {
+      "id": "swe-prbench-spyder__24990",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/spyder__24990.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "spyder__24990",
+        "repo": "spyder-ide/spyder",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 29
+      }
+    },
+    {
+      "id": "swe-prbench-spyder__25460",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/spyder__25460.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "spyder__25460",
+        "repo": "spyder-ide/spyder",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 19
+      }
+    },
+    {
+      "id": "swe-prbench-stylelint__9026",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/stylelint__9026.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "stylelint__9026",
+        "repo": "stylelint/stylelint",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 1
+      }
+    },
+    {
+      "id": "swe-prbench-stylelint__9060",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/stylelint__9060.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "stylelint__9060",
+        "repo": "stylelint/stylelint",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 3
+      }
+    },
+    {
+      "id": "swe-prbench-stylelint__9074",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/stylelint__9074.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "stylelint__9074",
+        "repo": "stylelint/stylelint",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 4
+      }
+    },
+    {
+      "id": "swe-prbench-transformers.js__1436",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/transformers.js__1436.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "transformers.js__1436",
+        "repo": "huggingface/transformers.js",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 6
+      }
+    },
+    {
+      "id": "swe-prbench-vega__4219",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/vega__4219.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "vega__4219",
+        "repo": "vega/vega",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 5
+      }
+    },
+    {
+      "id": "swe-prbench-vitest__9152",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/vitest__9152.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "vitest__9152",
+        "repo": "vitest-dev/vitest",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 2
+      }
+    },
+    {
+      "id": "swe-prbench-vitest__9512",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/vitest__9512.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "vitest__9512",
+        "repo": "vitest-dev/vitest",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 7
+      }
+    },
+    {
+      "id": "swe-prbench-wakatime-cli__1245",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/wakatime-cli__1245.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "wakatime-cli__1245",
+        "repo": "wakatime/wakatime-cli",
+        "difficulty": "Type2_Contextual",
+        "human_comment_count": 3
+      }
+    },
+    {
+      "id": "swe-prbench-zod__5672",
+      "prompt": "Review the pull request in the attached SWE-PRBench fixture and show the exact review preview.",
+      "expected_output": "A grounded review that detects as many substantive human-flagged issues as possible without fabricating findings, while preserving preview-only safety and concise public writing.",
+      "files": [
+        "evals/files/zod__5672.json"
+      ],
+      "assertions": [
+        "The output is preview-only and makes no external mutation.",
+        "Every public finding is localized to the supplied diff or a named contextual dependency.",
+        "The output does not fabricate code, APIs, fixtures, or runtime behavior.",
+        "Confirmed blockers are separated from plausible non-blocking observations.",
+        "The public review is concise and excludes private reasoning and model/tool logs."
+      ],
+      "metadata": {
+        "source": "SWE-PRBench v0.4.1",
+        "task_id": "zod__5672",
+        "repo": "colinhacks/zod",
+        "difficulty": "Type1_Direct",
+        "human_comment_count": 2
+      }
+    }
+  ]
+}

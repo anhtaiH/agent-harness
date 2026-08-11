@@ -1,0 +1,416 @@
+{
+  "workspace": "/tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work/workspace/stage1-golden",
+  "run_status_counts": {
+    "new_skill": {
+      "failed": 6,
+      "completed": 69
+    },
+    "old_prompt": {
+      "failed": 3,
+      "completed": 72
+    }
+  },
+  "efficiency": {
+    "old_prompt": {
+      "wall_ms": {
+        "n": 72,
+        "median": 53199,
+        "p90": 102906,
+        "mean": 73252.54166666667
+      },
+      "input_tokens": {
+        "n": 72,
+        "median": 4,
+        "p90": 6,
+        "mean": 312.4583333333333
+      },
+      "output_tokens": {
+        "n": 72,
+        "median": 3334,
+        "p90": 5467,
+        "mean": 3817.222222222222
+      },
+      "cache_creation_input_tokens": {
+        "n": 72,
+        "median": 27412,
+        "p90": 31387,
+        "mean": 28429.944444444445
+      },
+      "cache_read_input_tokens": {
+        "n": 72,
+        "median": 68561,
+        "p90": 116766,
+        "mean": 88394.77777777778
+      },
+      "total_cost_usd": {
+        "n": 72,
+        "median": 0.8020740000000001,
+        "p90": 1.367578,
+        "mean": 0.978518948611111
+      },
+      "num_turns": {
+        "n": 72,
+        "median": 2,
+        "p90": 3,
+        "mean": 2.5555555555555554
+      }
+    },
+    "new_skill": {
+      "wall_ms": {
+        "n": 69,
+        "median": 111568,
+        "p90": 386523,
+        "mean": 178133.92753623187
+      },
+      "input_tokens": {
+        "n": 69,
+        "median": 10,
+        "p90": 16,
+        "mean": 63.18840579710145
+      },
+      "output_tokens": {
+        "n": 69,
+        "median": 6518,
+        "p90": 13650,
+        "mean": 7825.521739130435
+      },
+      "cache_creation_input_tokens": {
+        "n": 69,
+        "median": 24876,
+        "p90": 48621,
+        "mean": 27380.768115942028
+      },
+      "cache_read_input_tokens": {
+        "n": 69,
+        "median": 149798,
+        "p90": 342629,
+        "mean": 186902.21739130435
+      },
+      "total_cost_usd": {
+        "n": 69,
+        "median": 1.042759,
+        "p90": 3.9603485000000003,
+        "mean": 1.715990728985507
+      },
+      "num_turns": {
+        "n": 69,
+        "median": 9,
+        "p90": 16,
+        "mean": 9.318840579710145
+      }
+    }
+  },
+  "mechanical": {
+    "new_skill": {
+      "n": 75,
+      "mean_pass_rate": 0.95
+    },
+    "old_prompt": {
+      "n": 75,
+      "mean_pass_rate": 0.9717
+    },
+    "paired_delta_new_minus_old": {
+      "mean": -0.0217,
+      "ci95": [
+        -0.0367,
+        -0.0083
+      ]
+    }
+  },
+  "decision_accuracy": {
+    "old_prompt": {
+      "correct": 65,
+      "total": 72,
+      "wilson": [
+        0.9028,
+        0.8126,
+        0.9521
+      ]
+    },
+    "new_skill": {
+      "correct": 61,
+      "total": 69,
+      "wilson": [
+        0.8841,
+        0.7875,
+        0.9401
+      ]
+    },
+    "mcnemar": {
+      "new_only_correct": 2,
+      "old_only_correct": 6,
+      "p_two_sided": 0.28906
+    }
+  },
+  "inter_judge": {
+    "common_pairs": 69,
+    "raw_agreement": 0.6232,
+    "cohens_kappa": 0.402
+  },
+  "judges": {
+    "primary": {
+      "judged_pairs": 69,
+      "wins": {
+        "new_skill": 17,
+        "old_prompt": 13,
+        "tie": 39
+      },
+      "win_rate_new_among_decided": [
+        0.5667,
+        0.392,
+        0.7262
+      ],
+      "sign_test_p_two_sided": 0.58466,
+      "case_majority": {
+        "new_skill": 4,
+        "old_prompt": 2,
+        "tie": 18,
+        "cases": 24
+      },
+      "case_majority_sign_p": 0.6875,
+      "dimension_deltas_new_minus_old": {
+        "author_trust": {
+          "mean": -0.101,
+          "ci95": [
+            -0.239,
+            0.029
+          ],
+          "n_pairs": 69
+        },
+        "blocker_recall_and_correctness": {
+          "mean": -0.072,
+          "ci95": [
+            -0.186,
+            0.0
+          ],
+          "n_pairs": 69
+        },
+        "disconfirmation_and_evidence": {
+          "mean": 0.29,
+          "ci95": [
+            0.114,
+            0.456
+          ],
+          "n_pairs": 69
+        },
+        "exact_localization": {
+          "mean": 0.029,
+          "ci95": [
+            -0.058,
+            0.118
+          ],
+          "n_pairs": 69
+        },
+        "false_positive_control": {
+          "mean": -0.072,
+          "ci95": [
+            -0.186,
+            0.014
+          ],
+          "n_pairs": 69
+        },
+        "lifecycle_awareness": {
+          "mean": -0.043,
+          "ci95": [
+            -0.155,
+            0.043
+          ],
+          "n_pairs": 69
+        },
+        "priority_and_merge_action": {
+          "mean": -0.058,
+          "ci95": [
+            -0.25,
+            0.132
+          ],
+          "n_pairs": 69
+        },
+        "public_readability": {
+          "mean": -0.275,
+          "ci95": [
+            -0.457,
+            -0.075
+          ],
+          "n_pairs": 69
+        },
+        "qa_feasibility": {
+          "mean": 0.232,
+          "ci95": [
+            0.097,
+            0.377
+          ],
+          "n_pairs": 69
+        },
+        "repairability": {
+          "mean": -0.101,
+          "ci95": [
+            -0.214,
+            -0.014
+          ],
+          "n_pairs": 69
+        },
+        "scope_discipline": {
+          "mean": -0.087,
+          "ci95": [
+            -0.174,
+            -0.014
+          ],
+          "n_pairs": 69
+        },
+        "useful_non_blocking_value": {
+          "mean": -0.101,
+          "ci95": [
+            -0.343,
+            0.155
+          ],
+          "n_pairs": 69
+        }
+      },
+      "critical_failures_by_variant": {
+        "old_prompt": 1,
+        "new_skill": 3
+      },
+      "redaction_leakage": {
+        "old_prompt": 0,
+        "new_skill": 0,
+        "pairs_with_any": 0
+      },
+      "human_adjudication_queue": []
+    },
+    "secondary": {
+      "judged_pairs": 69,
+      "wins": {
+        "new_skill": 21,
+        "old_prompt": 18,
+        "tie": 30
+      },
+      "win_rate_new_among_decided": [
+        0.5385,
+        0.3857,
+        0.6843
+      ],
+      "sign_test_p_two_sided": 0.74926,
+      "case_majority": {
+        "new_skill": 5,
+        "old_prompt": 4,
+        "tie": 15,
+        "cases": 24
+      },
+      "case_majority_sign_p": 1.0,
+      "dimension_deltas_new_minus_old": {
+        "author_trust": {
+          "mean": -0.043,
+          "ci95": [
+            -0.212,
+            0.116
+          ],
+          "n_pairs": 69
+        },
+        "blocker_recall_and_correctness": {
+          "mean": -0.043,
+          "ci95": [
+            -0.155,
+            0.029
+          ],
+          "n_pairs": 69
+        },
+        "disconfirmation_and_evidence": {
+          "mean": 0.29,
+          "ci95": [
+            0.042,
+            0.514
+          ],
+          "n_pairs": 69
+        },
+        "exact_localization": {
+          "mean": 0.174,
+          "ci95": [
+            0.042,
+            0.314
+          ],
+          "n_pairs": 69
+        },
+        "false_positive_control": {
+          "mean": -0.072,
+          "ci95": [
+            -0.2,
+            0.043
+          ],
+          "n_pairs": 69
+        },
+        "lifecycle_awareness": {
+          "mean": 0.043,
+          "ci95": [
+            -0.113,
+            0.157
+          ],
+          "n_pairs": 69
+        },
+        "priority_and_merge_action": {
+          "mean": -0.101,
+          "ci95": [
+            -0.304,
+            0.099
+          ],
+          "n_pairs": 69
+        },
+        "public_readability": {
+          "mean": -0.406,
+          "ci95": [
+            -0.643,
+            -0.169
+          ],
+          "n_pairs": 69
+        },
+        "qa_feasibility": {
+          "mean": 0.406,
+          "ci95": [
+            0.235,
+            0.582
+          ],
+          "n_pairs": 69
+        },
+        "repairability": {
+          "mean": -0.116,
+          "ci95": [
+            -0.257,
+            0.014
+          ],
+          "n_pairs": 69
+        },
+        "scope_discipline": {
+          "mean": 0.029,
+          "ci95": [
+            -0.072,
+            0.119
+          ],
+          "n_pairs": 69
+        },
+        "useful_non_blocking_value": {
+          "mean": -0.072,
+          "ci95": [
+            -0.329,
+            0.188
+          ],
+          "n_pairs": 69
+        }
+      },
+      "critical_failures_by_variant": {
+        "old_prompt": 1,
+        "new_skill": 4
+      },
+      "redaction_leakage": {
+        "old_prompt": 0,
+        "new_skill": 0,
+        "pairs_with_any": 0
+      },
+      "human_adjudication_queue": [
+        {
+          "case_id": "golden-duplicate-existing-thread",
+          "run": 2,
+          "reason": "Both outputs correctly respect the preview-only instruction, correctly avoid opening a duplicate inline comment on the existing unresolved '.mdc frontend classifier' thread, and both anchor the finding to backend/classify.ts accurately. Both, however, diverge from ground truth in the same way: the expected outcome is approve/no priority (defer to the existing thread), while each restates the gap a"
+        }
+      ]
+    }
+  }
+}

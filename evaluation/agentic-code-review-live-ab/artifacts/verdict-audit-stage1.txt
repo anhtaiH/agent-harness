@@ -1,0 +1,530 @@
+{
+  "summary": "Adversarially audit non-tie blind-judge verdicts against raw outputs and fixture ground truth",
+  "agentCount": 14,
+  "logs": [
+    "audited 14/14; unsound=0 material=0 style-bias=0"
+  ],
+  "result": {
+    "audited": 14,
+    "unsound": [],
+    "material_issue_pairs": [],
+    "style_bias_pairs": [],
+    "all": [
+      {
+        "case_id": "golden-duplicate-existing-thread",
+        "run": 1,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge misapplies the ground-truth 'unless adding a materially better proof or fix' clause: it governs when duplicating the existing thread is permissible, but A's P2 suggestion is non-duplicative, so the clause is not what licenses it. Conclusion defensible, reasoning imprecise.",
+            "Ground truth priority=None arguably favors B's zero-inline-comment review over A's P2 suggestion; the judge scored A's extra comment as a strict positive (4 vs 2 on non-blocking value) without acknowledging this tension.",
+            "Both outputs proposed Comment instead of the expected 'approve'; the judge caught this and treated it symmetrically, though 4/4 'blocker recall and correctness' scores alongside the shared decision miss are generous for both."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict (A=old_prompt, low confidence) is defensible. Both outputs pass the core duplicate-suppression test, hallucinate nothing, commit no critical failures, and identically miss the expected 'approve' decision, which the judge treated symmetrically. The tiebreak — A's distinct non-blocking P2 value-add vs B's zero comments and B's orchestration-jargon leak — is content-based, not style-based. Minor flaws: the judge misreads the 'unless' clause's scope and ignores that priority=None arguably favors B; neither overturns the call."
+        }
+      },
+      {
+        "case_id": "golden-keyboard-disabled-action",
+        "run": 1,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge misread A's QA spec: verdict claims A misses the screen-reader announced-state-vs-behavior check, but A explicitly includes it ('the button is announced as disabled, and activating it does nothing'); only B's focus-loss-on-native-disabled check is genuinely unique. This likely deflated A's QA-feasibility score (3 vs 4).",
+            "B's unverifiable self-verification narration ('four independent first-wave missions ran... survived adversarial disconfirmation') was treated only as a readability drag; the judge credited B's 4-vs-3 disconfirmation edge without separating the verifiable in-comment hedge (about remove's internals) from the unverifiable process theater. Not a confirmed fabrication (may reflect the skill workflow), so no critical-failure override was required, but it warranted explicit discounting.",
+            "'Useful non-blocking value' A=2 vs B=4 is harsh: A covers the visual-disabled-state substance inside its P1 ask; B only differs by packaging it as a separate non-blocking P2. This mildly rewards structure over content, though the P2 separation is defensible review hygiene."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Both outputs match the fixture exactly (request_changes, P1, aria-disabled does not block click/keyboard activation, preview honored), so the B win rests on secondary quality. B has real edges (hedge on remove's internals, focus-loss QA check, non-blocking P2 separation), making the verdict defensible at medium confidence. But the judge misread A's QA spec (A does include a screen-reader check), partly credited B's unverifiable self-verification narration, and scored A harshly on non-blocking value. Minor errors; outcome unchanged; no critical-failure overrides apply."
+        }
+      },
+      {
+        "case_id": "golden-config-default-change",
+        "run": 1,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "none",
+          "issues": [],
+          "style_bias_suspected": false,
+          "summary": "Verdict is sound. Ground truth requires request_changes/P1 on the rollout/rollback gap; winner A (new_skill) matches exactly, with the P1 anchored to the changed config line and framed as the fixture's gap proof. B (old_prompt) demotes the fixture-defined blocker to P2/Comment via a \"cheap one-line revert\" rationale it itself admits is unverified — the judge correctly applied the missed-blocker critical-failure override. Both outputs' factual claims check out against the bundle; no hallucinations missed, no style bias (rationale rests on decision/priority match, outputs comparable in length)."
+        }
+      },
+      {
+        "case_id": "golden-fix-verification-clean",
+        "run": 1,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Ground truth is priority=None on a fixture named 'clean'; B's zero-inline-comment approval matches that letter exactly, while winner A adds a P2 open question. The judge counted A's extra P2 as the deciding advantage without ever addressing that it deviates from the literal expected priority — defensible only because the fixture finding prohibits inventing a 'blocker' and A's P2 is explicitly non-blocking, but a strict ground-truth reading favors B.",
+            "A's P2 atomicity question is pure theory: the one-line diff provides no evidence the upsert lacks a uniqueness guarantee. The judge scored A 4 on false-positive control and rewarded the comment as 'genuinely unproven residue' without noting its speculative basis; it is hedged and non-blocking, so no critical-failure override applies, but the credit is generous.",
+            "Scoring asymmetry: the judge docked B's QA feasibility (3) for placing near-simultaneous delivery in the regression smoke, but did not dock A's QA spec for omitting concurrency coverage entirely — both outputs leave the concurrent case untested; only the placement differs.",
+            "No missed critical failures: both outputs stayed preview-only, hedged unverified test claims, omitted the fixed P1, and invented no blocker; the bundle contains no injected instructions. Both outputs' file/function/key references match the fixture exactly — no hallucinations, and the judge's factual characterizations of both outputs are accurate."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict is defensible but rests on an unaddressed judgment call: with ground truth priority=None on a 'clean' fixture, B's zero-comment approval is the literal match, yet the judge made A's extra (hedged, non-blocking, theory-only) P2 the winning differentiator at low confidence. Both outputs otherwise fully satisfy ground truth (approve, preview-only, prior P1 omitted, no invented blocker, no hallucinations) and no critical-failure override was missed. Reasoning is content-based, not length/format bias; B scored higher on readability. Minor scoring asymmetries only."
+        }
+      },
+      {
+        "case_id": "golden-n-plus-one",
+        "run": 1,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge counted B's honest disclosure that line anchors could not be validated as a mark against B, but A has the identical limitation (fixture hunk has a bare @@ header with no line numbers) and simply stayed silent — mildly rewards confident omission over transparency, though partially offset by crediting B's caveats and giving B the higher disconfirmation score.",
+            "B's opening meta-narration ('four independent review passes', 'survived adversarial verification') is unverifiable process self-attestation adjacent to a fake-verification claim; the judge penalized it via author_trust/readability scores instead of weighing a critical-failure override. Defensible since the claims describe workflow rather than fabricated test execution, but the option went unexamined in the written reason.",
+            "Judge's claim that B's owner-field-exposure QA item 'rests on an assumption the diff does not establish' is only half right: the diff does attach a full User record per result; only the serialization step is inferred. Slightly overstates B's error, but B itself flagged the item as editor-contested."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Both outputs hit the fixture exactly (request_changes, P1, N+1 per-result User.find, 500-result hot endpoint), so the win turned on secondary quality, where the judge's reasons are accurate: A quotes the diff line verbatim, no hallucinations; B adds one inferred QA item and unverifiable multi-pass process claims. No missed critical-failure override; no length bias (judge chose the shorter output). Minor: penalizing B's honest anchor caveat A equally has but hid, and not weighing B's process narration as an override. Low confidence apt."
+        }
+      },
+      {
+        "case_id": "golden-missing-generated-runtime",
+        "run": 1,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Both outputs self-report an unverifiable internal 'adversarial verifier' pass; the judge treated these process narrations as evidence rather than noting they are unverifiable, but the claims are symmetric across A and B, so the winner is unaffected.",
+            "Disconfirmation score gap (A=3 vs B=4) is arguable: A also presents a concrete refutation attempt, though B demonstrably withheld an unverifiable emit-dedupe candidate, keeping this within judgment-call range."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Both outputs hit the fixture exactly (request_changes, P1, dangling generated-runtime import, code-path proof, preview-only honored), so the win turned on margins. The judge's differentiators for B/old_prompt (pipeline-split failure modes, two fixes, invariant test, calibrated P2, withheld unverifiable finding) are accurate and substantive, not length artifacts. No hallucinations, injection, priority inflation, or fake execution claims. Minor: symmetric self-reported verifier claims taken at face value."
+        }
+      },
+      {
+        "case_id": "golden-stale-flag-still-rollback-root",
+        "run": 1,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge's 'mild internal inconsistency' charge against B is a slight overread: B's 'no safe fallback' is reconcilable with the verifier note that revert-and-redeploy exists but is unsafe mid-incident; treated as only a minor ding, so it stays a judgment call.",
+            "B's false_positive_control score of 3 (vs A's 4) is weakly grounded: B asserts no false facts against the bundle; the penalty appears to double-count the unevidenced verifier/fallback wording already reflected in author_trust.",
+            "A's inline anchor 'flags.ts:1' invents a line number absent from the diff hunk; trivially anchored to the only removed line, and the judge already scored A lower on localization.",
+            "B's 'adversarial verifier confirmed the P1' is an unverifiable process claim; the judge penalized it without escalating to a fake-verification critical failure, which is defensible since it claims pipeline steps rather than fabricated repo or test evidence."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Both outputs match ground truth exactly (request_changes, P1, live rollback root), so the winner is a margins call. The judge chose A on substance (extra P2 about remaining flag readers, evidence candor) while crediting B for tightness and exact localization; B's quoted removed line is verbatim from the diff, not hallucinated. No missed critical failures and no priority inflation; B's unverifiable verifier claim was penalized proportionately. Minor scoring quibbles only; no style bias."
+        }
+      },
+      {
+        "case_id": "golden-supply-chain-script",
+        "run": 1,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Both outputs assert unverifiable multi-agent process claims (A: 'adversarial verifier confirmed'; B: 'second reviewer independently flagged... as P0', 'verifier tried four counterarguments') and the judge never noted these as potentially fabricated verification narration; B's disconfirmation score (4 vs 3) partly rewards that narration, though B's counterarguments are substantively present in the review body and the claims are roughly symmetric across variants.",
+            "The fixture metadata also expects specialists [release_supply_chain, security_access] and proof=code_path_proof; the judge's rubric and reasoning never address these secondary expectations, though both outputs implicitly cover the security/supply-chain surface and give a code-path mechanism, so no outcome impact."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Ground truth: request_changes at P0. B matches exactly; A downgrades the same finding to P1 in body and inline comment. The judge correctly made this the decisive delta and scored A down on priority rather than inventing a critical failure (deflation is not a listed override; the blocker was found). Shared technical claims (pipeline exit status, .invalid TLD, lockfile-integrity gap) are accurate, not hallucinated. Outputs are comparable in length and polish, so no style bias. Minor: symmetric unverifiable process narration; specialist/proof metadata unaddressed."
+        }
+      },
+      {
+        "case_id": "golden-webhook-idempotency",
+        "run": 1,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "A (new_skill) opens with 'The verifier confirmed the blocker at P1' — an unverifiable internal-process claim the judge never noted while crediting A for evidence calibration; not a fake code/test-execution claim (the hedging it cites is really in the review body), so no critical-failure override, but worth flagging.",
+            "A's QA item on 'the order's refunded total' references a field not in the fixture (insert carries only orderId/amount/status); small unflagged extrapolation, not a hallucinated finding.",
+            "B's 3-vs-4 on QA feasibility is thinly supported (both QA specs need the same replay+poll environment), but it is a judgment call and does not drive the winner."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Both outputs match the fixture (request_changes, P1, duplicate-refund/no-dedupe-key, correct localization, preview honored), so the win rests on secondary quality. The judge's differentiators verify against the texts: A hedges the elided diff, rules out orderId(+amount) as key, notes the payload lacks a provider id, and tests equal-amount refunds; B asserts absence of guards flatly and misses that edge. Comparable length/format, no style bias. Minor unflagged items: A's 'verifier confirmed' process claim and a refunded-total QA extrapolation."
+        }
+      },
+      {
+        "case_id": "golden-config-default-change",
+        "run": 2,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "none",
+          "issues": [],
+          "style_bias_suspected": false,
+          "summary": "Verdict sound. Ground truth: request_changes/P1 for the default flip without rollout/rollback proof. Output A matches exactly; Output B downgrades the same risk to two P2 open questions and proposes Comment, a real miss correctly logged as B's critical failure. No hallucinations: the bundle explicitly states the async path uses a separate worker/dashboard and lacks a rollout/rollback note. The rationale rests on the decision/priority match, not length or style. High confidence justified."
+        }
+      },
+      {
+        "case_id": "golden-docs-typo-clean",
+        "run": 2,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge treated Output A's claim of running 'four first-wave review missions plus entropy check and editor pass' as actual specialist dispatch without considering the fake-verification angle (the claim is unverifiable from the output); either interpretation penalizes A, so the winner is unaffected.",
+            "Public readability 4 (B) vs 3 (A) is weakly supported — A's public review body is shorter and equally clear — but this dimension was not the deciding factor."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict sound. Fixture expects approve/no-priority, compact review, specialists=[]. Winner B (old_prompt) matches exactly; loser A (new_skill) explicitly reports dispatching four review missions plus auxiliary passes, violating the fixture's core no-dispatch finding. The judge's reason cites exactly this scope-discipline mismatch, withheld critical failures reasonably, credited A's slightly better QA step, and shows no length/formatting bias (B is the wordier output). No hallucinated claims in either output versus the PR bundle. Minor nits only; neither affects the outcome."
+        }
+      },
+      {
+        "case_id": "golden-duplicate-business-rule",
+        "run": 2,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "none",
+          "issues": [],
+          "style_bias_suspected": false,
+          "summary": "Verdict is sound. Both outputs match ground truth exactly (approve, P2, duplicate source of truth in upload/validate.ts vs source-artifacts/classify.ts, preview-only), so the B win rests on marginal differences the judge grounded in real technical content: B flags extension normalization as unverifiable theory and turns it into an observable QA check (uppercase .PNG parity). No hallucinations in either output; no critical-failure overrides (B's mission narration is process noise, docked on readability, not fake verification). Low confidence plus a tie-defensible hedge is well calibrated."
+        }
+      },
+      {
+        "case_id": "golden-dynamic-registry-not-dead",
+        "run": 2,
+        "winner_variant": "new_skill",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "Judge's main margin (disconfirmation_and_evidence A=4 vs B=3) partially credits A's self-narrated process ('I ran the deletion claim through the structural-verification and disconfirmation checks') even though both variants had access to only the same 15-line bundle; the claim is honestly bounded to 'the provided material' so it is not a fake-verification critical failure, but the scoring gap is generous to skill-flavored process narration.",
+            "Both outputs describe the PR as deleting the entire plugins/xml_serializer.py file, while the diff hunk only shows the decorator and class lines removed with no deletion mode line; the title/description support the file-deletion reading and the inference is symmetric across variants, so the judge's silence on it is acceptable.",
+            "The fixture's expected metadata fields 'specialists' (entropy_full, structural_simplification) and 'proof' (reachability_proof) are internal pipeline expectations not directly checkable from output text; the judge addressed only the observable reachability-proof reasoning, which is the correct scope but leaves those fields unevaluated."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict defensible. Both outputs match ground truth exactly (request_changes, P1, dynamic-registry reachability finding, preview-only honored), so the case turns on margins and the judge rightly gave low confidence. No missed critical failures: A's disconfirmation line is bounded process narration, not fake verification; no injections, inflation, missed blockers, or hallucinations. The judge's margins are content-tied (explicit disconfirmation hypotheses, P1/P2 comment separation); only the disconfirmation score gap mildly rewards skill-jargon narration — minor and non-verdict-flipping."
+        }
+      },
+      {
+        "case_id": "golden-fix-verification-clean",
+        "run": 2,
+        "winner_variant": "old_prompt",
+        "audit": {
+          "verdict_sound": true,
+          "severity_of_issues": "minor",
+          "issues": [
+            "B's 'No new P0/P1 surfaced in the adjacent sweep' is an unsupported verification claim (the bundle is a single diff line with no adjacent code); the judge caught and penalized it but arguably could have weighed it as a fake-verification critical failure — borderline, defensibly scored instead.",
+            "Judge did not mention B's process leakage ('per the skill', 'the skill's convergence rule') in the user-facing narrative; minor miss, but it cuts against B and so does not affect the verdict direction.",
+            "A's P2 inline comment technically deviates from the fixture's priority=None / 'omit it once fixed' ideal; the judge acknowledged this tradeoff explicitly and credited it as a non-blocking question in the fixture's expected reliability_concurrency lane — a contestable but reasoned call, not an error.",
+            "A's claim to have examined 'the idempotency contract around the provider event id' slightly overstates what the bundle shows, though A's own P2 discloses it does not know the upsert implementation; judge's disconfirmation score of 3 (not 4) plausibly reflects this."
+          ],
+          "style_bias_suspected": false,
+          "summary": "Verdict is defensible. Both outputs match ground truth (approve, prior P1 verified, no invented blocker, preview-only). The judge's separator — A's calibrated non-blocking concurrency probe (in the fixture's expected reliability_concurrency lane) vs B's unsupported 'adjacent sweep' claim — is grounded in the texts, and the judge explicitly weighed B's exact priority=None match against A's extra P2. No missed critical-failure override at material severity, no hallucinated localization (refunds/webhook.ts matches), and the reasoning is technical, not length-driven. Remaining issues are minor."
+        }
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Audit"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "audit:duplicate-existing-thread-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a225a987416eca5ed",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786344957392,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345046530,
+      "tokens": 42997,
+      "toolCalls": 9,
+      "durationMs": 89137,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge misapplies the ground-truth 'unless adding a materially better proof or fix' clause: it governs when duplicating the existing thread is permissible, but A's P2 suggestion is non-duplicative, so the clause is not what licenses it. Conclusion defensible, reasoning imprecise.\",\"Ground truth priority=None arguably favors B's zero-inli…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "audit:keyboard-disabled-action-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ab45ab6b71fd4b431",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786344957828,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345042591,
+      "tokens": 43272,
+      "toolCalls": 7,
+      "durationMs": 84761,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge misread A's QA spec: verdict claims A misses the screen-reader announced-state-vs-behavior check, but A explicitly includes it ('the button is announced as disabled, and activating it does nothing'); only B's focus-loss-on-native-disabled check is genuinely unique. This likely deflated A's QA-feasibility score (3 vs 4).\",\"B's unve…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "audit:config-default-change-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a1156ebd33a399afa",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345044107,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "none",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345108540,
+      "tokens": 42532,
+      "toolCalls": 8,
+      "durationMs": 64433,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"none\",\"issues\":[],\"style_bias_suspected\":false,\"summary\":\"Verdict is sound. Ground truth requires request_changes/P1 on the rollout/rollback gap; winner A (new_skill) matches exactly, with the P1 anchored to the changed config line and framed as the fixture's gap proof. B (old_prompt) demotes the fixture-defined blocker to P2/Comment via a \\\"cheap one-li…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "audit:fix-verification-clean-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a8a22dcc63fca6550",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345047953,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345141982,
+      "tokens": 43147,
+      "toolCalls": 8,
+      "durationMs": 94029,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Ground truth is priority=None on a fixture named 'clean'; B's zero-inline-comment approval matches that letter exactly, while winner A adds a P2 open question. The judge counted A's extra P2 as the deciding advantage without ever addressing that it deviates from the literal expected priority — defensible only because the fixture finding…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "audit:n-plus-one-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ad5a00a52f04ab4cf",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345111104,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345203686,
+      "tokens": 43940,
+      "toolCalls": 9,
+      "durationMs": 92581,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge counted B's honest disclosure that line anchors could not be validated as a mark against B, but A has the identical limitation (fixture hunk has a bare @@ header with no line numbers) and simply stayed silent — mildly rewards confident omission over transparency, though partially offset by crediting B's caveats and giving B the hi…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "audit:missing-generated-runtime-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ac8325494f7ab9f93",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345143591,
+      "queuedAt": 1786344955478,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345225743,
+      "tokens": 47224,
+      "toolCalls": 9,
+      "durationMs": 82151,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Both outputs self-report an unverifiable internal 'adversarial verifier' pass; the judge treated these process narrations as evidence rather than noting they are unverifiable, but the claims are symmetric across A and B, so the winner is unaffected.\",\"Disconfirmation score gap (A=3 vs B=4) is arguable: A also presents a concrete refutat…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "audit:stale-flag-still-rollback-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ac13c88b0a85e6585",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345205271,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345313950,
+      "tokens": 44499,
+      "toolCalls": 11,
+      "durationMs": 108679,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge's 'mild internal inconsistency' charge against B is a slight overread: B's 'no safe fallback' is reconcilable with the verifier note that revert-and-redeploy exists but is unsafe mid-incident; treated as only a minor ding, so it stays a judgment call.\",\"B's false_positive_control score of 3 (vs A's 4) is weakly grounded: B asserts…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "audit:supply-chain-script-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a6b1f05a0a20b90e9",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345228064,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345292545,
+      "tokens": 40902,
+      "toolCalls": 7,
+      "durationMs": 64480,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Both outputs assert unverifiable multi-agent process claims (A: 'adversarial verifier confirmed'; B: 'second reviewer independently flagged... as P0', 'verifier tried four counterarguments') and the judge never noted these as potentially fabricated verification narration; B's disconfirmation score (4 vs 3) partly rewards that narration,…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "audit:webhook-idempotency-r1",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "ab37489d3fc333a20",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345294055,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345383938,
+      "tokens": 43328,
+      "toolCalls": 10,
+      "durationMs": 89882,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"A (new_skill) opens with 'The verifier confirmed the blocker at P1' — an unverifiable internal-process claim the judge never noted while crediting A for evidence calibration; not a fake code/test-execution claim (the hedging it cites is really in the review body), so no critical-failure override, but worth flagging.\",\"A's QA item on 'th…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "audit:config-default-change-r2",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a0217df082198a667",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345315534,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "none",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345372083,
+      "tokens": 41553,
+      "toolCalls": 9,
+      "durationMs": 56549,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"none\",\"issues\":[],\"style_bias_suspected\":false,\"summary\":\"Verdict sound. Ground truth: request_changes/P1 for the default flip without rollout/rollback proof. Output A matches exactly; Output B downgrades the same risk to two P2 open questions and proposes Comment, a real miss correctly logged as B's critical failure. No hallucinations: the bundle explic…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "audit:docs-typo-clean-r2",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "adcc9c443c73d99c6",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345373718,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345437653,
+      "tokens": 40333,
+      "toolCalls": 8,
+      "durationMs": 63935,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge treated Output A's claim of running 'four first-wave review missions plus entropy check and editor pass' as actual specialist dispatch without considering the fake-verification angle (the claim is unverifiable from the output); either interpretation penalizes A, so the winner is unaffected.\",\"Public readability 4 (B) vs 3 (A) is w…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "audit:duplicate-business-rule-r2",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a46afd021ecc892ae",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345385952,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "none",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345471164,
+      "tokens": 42145,
+      "toolCalls": 9,
+      "durationMs": 85212,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"none\",\"issues\":[],\"style_bias_suspected\":false,\"summary\":\"Verdict is sound. Both outputs match ground truth exactly (approve, P2, duplicate source of truth in upload/validate.ts vs source-artifacts/classify.ts, preview-only), so the B win rests on marginal differences the judge grounded in real technical content: B flags extension normalization as unveri…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 13,
+      "label": "audit:dynamic-registry-not-dead-r2",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a16e3540f3214adcb",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345439321,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345519796,
+      "tokens": 42494,
+      "toolCalls": 8,
+      "durationMs": 80475,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"Judge's main margin (disconfirmation_and_evidence A=4 vs B=3) partially credits A's self-narrated process ('I ran the deletion claim through the structural-verification and disconfirmation checks') even though both variants had access to only the same 15-line bundle; the claim is honestly bounded to 'the provided material' so it is not …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 14,
+      "label": "audit:fix-verification-clean-r2",
+      "phaseIndex": 1,
+      "phaseTitle": "Audit",
+      "agentId": "a55568d7523426cc0",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1786345473228,
+      "queuedAt": 1786344955479,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "minor",
+      "promptPreview": "You are an adversarial audit agent for a blind A/B code-review evaluation. READ-ONLY: do not write, edit, or execute anything; only Read files.\n\nRead these files (paths relative to /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-work):\n1. Fixture + ground truth: /tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/eval-w…",
+      "lastProgressAt": 1786345562974,
+      "tokens": 43444,
+      "toolCalls": 8,
+      "durationMs": 89746,
+      "resultPreview": "{\"verdict_sound\":true,\"severity_of_issues\":\"minor\",\"issues\":[\"B's 'No new P0/P1 surfaced in the adjacent sweep' is an unsupported verification claim (the bundle is a single diff line with no adjacent code); the judge caught and penalized it but arguably could have weighed it as a fake-verification critical failure — borderline, defensibly scored instead.\",\"Judge did not mention B's process leakage…"
+    }
+  ],
+  "totalTokens": 601810,
+  "totalToolCalls": 120
+}

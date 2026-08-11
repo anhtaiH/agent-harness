@@ -1,0 +1,17 @@
+{
+  "evals": "/tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/handoff/agentic-code-review-live-eval-handoff-v1/agentic-code-review-skills-v2.0.0/reviewing-pull-requests/evals/evals.json",
+  "evals_sha": "b550e9df351d2b99ecd88ecf3d26129d5f12255952751d552dd39597a1fc7050",
+  "skill_dir": "/tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/handoff/agentic-code-review-live-eval-handoff-v1/agentic-code-review-skills-v2.0.0/reviewing-pull-requests",
+  "skill_sha": "bebf9b33c35b25ef1e8e8dbf99bfc8f8fc8fc3de9be609f1b9a85fb0304ed1a3",
+  "baseline_prompt": "/tmp/claude-0/-home-user-agent-harness/b3df9c8a-0e7a-5be4-ab21-a20ff1cbc84b/scratchpad/handoff/agentic-code-review-live-eval-handoff-v1/agentic-code-review-skills-v2.0.0/baseline/preview_prompt_v19.md",
+  "baseline_sha": "fcf5ad86139faf14f96d34c41e59b3d597aaf2cf63991539d7fa7067c68450b2",
+  "runs": 3,
+  "seed": 20260811,
+  "case_count": 100,
+  "model": "claude-fable-5",
+  "effort": "high",
+  "timeout_s": 900,
+  "jobs": 6,
+  "allowed_tools": "Read,Grep,Glob,Task",
+  "disallowed_tools": "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Skill,SlashCommand,KillShell,BashOutput"
+}
