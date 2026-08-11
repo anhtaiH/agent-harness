@@ -65,6 +65,26 @@ no timeout, explicit non-empty response, not an error envelope, not a refusal.
 Stage 4 was **not** re-run wholesale: the 149 runs that completed before the limit are kept
 as-is, so no successful run was discarded or repeated.
 
+### Recovery outcome
+
+| Item | Value |
+|---|---|
+| Runs retried | 51 |
+| Runs recovered | **51 (100 %)** |
+| Shards fully recovered | 10 of 10 |
+| Final valid runs | **200 / 200** |
+| Final invalid runs | **0** |
+| Final balance | 100 `old_prompt` / 100 `new_skill` |
+| Final gradable pairs | **100 / 100** |
+
+Every single retried run succeeded. A 100 % recovery rate on the same inputs, with the same
+commands, is the strongest available confirmation that the original failures carried no
+information about either variant: nothing about the input, the prompt, or the skill changed
+between the failed attempt and the successful one — only the account's quota state.
+
+Stage 4 therefore reports the **full 100-PR corpus** with zero attrition in the final dataset,
+while the incident itself remains recorded here.
+
 ## Reporting rule applied
 
 Stage 4 results are reported with:
