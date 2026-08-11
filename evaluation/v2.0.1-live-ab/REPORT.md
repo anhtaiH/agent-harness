@@ -19,8 +19,9 @@ secure improvement. Both belong in the same summary; reporting either alone woul
 | | Result |
 |---|---|
 | **Gate** | **FAILED** — 3 of 4 primary metrics not demonstrated |
-| Runs executed | **500** across three stages |
-| Valid runs | **500 / 500 (100 %)** — zero timeouts, refusals, API errors, or missing responses |
+| Runs executed | **500** across four stages |
+| Valid runs (stages 1–3) | **450 / 450 (100 %)** — zero timeouts, refusals, API errors, or missing responses |
+| Stage 4 | hit an account usage limit mid-stage; see `STAGE4_ATTRITION.md` |
 | RED cases found | **3**, all treatment-only, all reproducible |
 | Largest improvement | Output-contract conformance on the abstention path, **+28.0 pp** (p < 1e-6) |
 | Cost | **1.44× control** on semantic review; **0.80× control** on lightweight policy work |
@@ -35,7 +36,7 @@ secure improvement. Both belong in the same summary; reporting either alone woul
 | 1 | Output-boundary RED suite, reproduced fresh | 11 | 8/8 leaks rejected, 3/3 controls accepted |
 | 2 | 25 semantic golden fixtures × 3 reps × 2 variants | 150 | 150 (100 %) |
 | 3 | 75 policy/routing cases × 1 rep × 2 variants | 150 | 150 (100 %) |
-| 4 | 100 real historical PRs (SWE-PRBench) × 2 variants | 200 | see Stage 4 section |
+| 4 | 100 real historical PRs (SWE-PRBench) × 2 variants | 200 | 149 on first pass; 51 lost to an account usage limit and re-run — see `STAGE4_ATTRITION.md` |
 
 Stages 2, 3, and 4 are reported **separately** and are never pooled. Policy/routing results are
 never presented as defect detection.
