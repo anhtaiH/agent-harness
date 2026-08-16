@@ -29,6 +29,21 @@ The result must be `~/.claude/skills/ultragoal/SKILL.md` — one directory named
 `ultragoal`, not a nested folder. `selftest` runs the whole lifecycle in a
 temp directory and prints one line per check; all of them should say `ok`.
 
+**Then disarm the host's turn cap, once.** Claude Code force-ends a turn after
+8 consecutive gate blocks; a long goal needs that off. Add to
+`~/.claude/settings.json` (merge into the file if it already exists):
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "0"
+  }
+}
+```
+
+With that set, every session starts with the cap disabled — nothing to
+remember at launch time, no env prefix on the command.
+
 Requirements: Python 3.8+ and `sh` on PATH. No third-party packages. Claude
 Code picks up new skills within the session, but if `~/.claude/skills/` did not
 exist before, restart Claude Code once.
@@ -115,21 +130,28 @@ mode, as is an explicit `--max-continues`.
 
 ## Running hands-off
 
-The gate keeps Claude working; permissions decide whether it needs you; and
-one host limit needs disarming — Claude Code force-ends a turn after 8
-consecutive gate blocks unless told otherwise.
+The gate keeps Claude working; permissions decide whether it needs you. With
+the settings entry from the install section in place, the walk-away recipe is
+just:
 
 ```bash
-CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0 claude --dangerously-skip-permissions
+claude --dangerously-skip-permissions
+> /ultragoal <request>
 ```
 
-That is the whole walk-away recipe: launch like that (bypass mode is refused
-when running as root — use `--permission-mode acceptEdits` plus an allow list
-there), type `/ultragoal <request>`, leave. Nothing prompts, nothing pauses;
-the decision log is in `report` when you come back. On first activation the
-skill writes the gate, resume, and question-block hooks with absolute paths
-into the repo's `.claude/settings.local.json`, so enforcement no longer
-depends on how or where the skill was installed.
+(Bypass mode is refused when running as root — use `--permission-mode
+acceptEdits` plus an allow list there. Without the settings entry, prefix the
+launch with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0` instead.) Then leave. Nothing
+prompts, nothing pauses; the decision log is in `report` when you come back.
+On first activation the skill writes the gate, resume, and question-block
+hooks with absolute paths into the repo's `.claude/settings.local.json`, so
+enforcement no longer depends on how or where the skill was installed.
+
+One calibration to know: `/ultragoal` on a genuinely trivial request gets the
+work done directly, without a goal bundle — the skill's goal-fit boundary
+refuses to wrap a two-minute edit in ceremony. A bundle plus gate appears
+when the work actually needs persistence: repeated attempts, a verifier that
+can fail, recovery across interruptions.
 
 One honest limit: no hook can *start* a turn. If the session itself dies — a
 usage limit, a crash, the machine sleeping — the goal's state survives on
