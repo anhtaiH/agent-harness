@@ -57,10 +57,10 @@ Other forms:
 
 | You type | What happens |
 | --- | --- |
-| `/ultragoal <request>` | design, audit, activate, execute |
+| `/ultragoal <request>` | the whole API: design, audit, activate, run to completion |
 | `/ultragoal design <request>` | goal packet only, nothing armed |
 | `/ultragoal critique this goal` | tighten an existing goal or draft |
-| `/ultragoal --unattended <request>` | full autonomy: no questions after activation, no pauses, decisions logged for later review |
+| `/ultragoal <request>, check with me` | supervised: bounded gate, guard on, may pause and ask |
 | `/ultragoal status` | where the goal stands |
 | `/ultragoal resume` | reconcile and continue |
 | `/ultragoal pause` | stand down now |
@@ -92,31 +92,25 @@ It writes a **goal bundle** and arms three hooks:
    through `ultragoal.py verify -- <command>`, which executes them and stores
    the real exit code. "Tests pass" with nothing run is rejected.
 
-A fourth, narrow hook guards the proof surface: while a goal is active, it
-denies force-pushes and `--no-verify`, denies deleting the goal bundle, and
-asks before removing or skipping tests or editing the acceptance and verifier
-sections of `goal.md`. Turn it off per goal with `ultragoal.py config --guard off`.
+A fourth, narrow guard hook exists for supervised goals: it denies
+force-pushes and `--no-verify`, denies deleting the goal bundle, and asks
+before removing or skipping tests or editing the acceptance and verifier
+sections of `goal.md`. It is **off by default** (full autonomy); it arms with
+`--autonomy standard` or `ultragoal.py config --guard on`.
 
 ## How it stops
 
-The gate is bounded, and every limit pauses rather than stopping silently:
+By default a goal runs until it is done: `complete` with recorded proof, or an
+evidence-backed `block`. No continuation budget, no idle pause, no guard.
+Open questions are decided, logged, and waiting for you in `report`. You can
+stop it at any moment: press Esc, or run `/ultragoal pause`. `waiting`
+releases the gate for an external process, with the wake signal recorded.
 
-- **40 continuations** by default (`--max-continues`).
-- **3 consecutive continuations with no recorded progress** — evidence, a
-  verifier run, an acceptance change, a phase change, or a ledgered attempt.
-- **An optional wall-clock deadline** (`--deadline-minutes`).
-- **You**, at any moment: press Esc, or run `/ultragoal pause`.
-
-Claude also releases the gate itself, deliberately, in four other ways:
-`complete` (proof satisfied), `block` (evidence-backed external blocker),
-`await` (a decision that is genuinely yours), and `waiting` (an external
-process, with the wake signal recorded).
-
-**Full autonomy** (`/ultragoal --unattended ...`, or `--autonomy full` on the
-goal) removes the budget, the idle pause, and the guard: the goal runs until
-`complete` or an evidence-backed `block`, decides open questions itself, and
-logs every call it made for your review in `ultragoal.py report`. Esc and
-`/ultragoal pause` still work at any moment.
+Ask for supervision in plain language ("check with me before risky steps")
+and the goal runs bounded instead: a 40-continuation budget, an auto-pause
+after 3 consecutive continuations with no recorded progress, an optional
+wall-clock deadline (`--deadline-minutes`), the anti-cheating guard, and
+`await` when a decision is genuinely yours.
 
 ## Running hands-off
 
@@ -128,9 +122,9 @@ claude --permission-mode acceptEdits          # no edit prompts
 claude -p "/ultragoal <request>"              # headless, one shot
 ```
 
-For a true walk-away run, combine `--dangerously-skip-permissions` with
-`/ultragoal --unattended <request>`: nothing prompts, nothing pauses, and the
-decision log is waiting in `report` when you come back.
+The whole walk-away recipe: launch with `--dangerously-skip-permissions`,
+type `/ultragoal <request>`, leave. Nothing prompts, nothing pauses; the
+decision log is in `report` when you come back.
 
 For longer runs, `/loop` re-enters on an interval or self-paced, and a
 scheduled task can fire `/ultragoal resume`. Cloud sessions and routines start
@@ -147,8 +141,8 @@ UG status                     # full state of the open goal
 UG report                     # status plus completion readiness
 UG pause / UG resume          # stand down / re-arm
 UG complete                   # close it (proof enforced)
-UG config --autonomy full         # unbounded, no idle pause, guard off
-UG config --guard off --max-continues 80
+UG config --autonomy standard     # supervised: bounded gate, guard on
+UG config --guard on --max-continues 80
 UG selftest                   # end-to-end health check
 ```
 

@@ -281,7 +281,7 @@ Exit criteria: facts are sufficient to draft the contract and expose remaining d
 
 def new_state(slug: str, title: str, objective: str, route: str, assurance: str,
               max_continues: int, deadline_minutes: int,
-              autonomy: str = "standard") -> dict:
+              autonomy: str = "full") -> dict:
     deadline = None
     if deadline_minutes:
         deadline = (datetime.now(timezone.utc) + timedelta(minutes=deadline_minutes)) \
@@ -1213,7 +1213,7 @@ def cmd_selftest(args):
         print("ultragoal selftest")
         print("-- lifecycle")
         r = run(["new", "--slug", "demo", "--objective", "Make the smoke check pass",
-                 "--title", "Demo goal"])
+                 "--title", "Demo goal", "--autonomy", "standard"])
         check("new creates a bundle", r.returncode == 0, r.stderr)
         check("goal.md written", (Path(env["ULTRAGOAL_DIR"]) / "demo" / "goal.md").is_file())
         check("plan.md written", (Path(env["ULTRAGOAL_DIR"]) / "demo" / "plan.md").is_file())
@@ -1256,7 +1256,7 @@ def cmd_selftest(args):
         check("gate releases once complete", r.stdout.strip() == "", r.stdout[:200])
 
         print("-- failing verifier is recorded honestly")
-        run(["new", "--slug", "fail", "--objective", "x"])
+        run(["new", "--slug", "fail", "--objective", "x", "--autonomy", "standard"])
         run(["accept", "y", "--slug", "fail"])
         run(["verifier", "f", "--slug", "fail"])
         r = run(["verify", "--slug", "fail", "--label", "f", "--primary", "--", "false"])
@@ -1304,14 +1304,15 @@ def cmd_selftest(args):
         check("guard asks before skipping a test",
               dec.get("permissionDecision") == "ask", r.stdout[:200])
 
-        print("-- full autonomy")
-        run(["new", "--slug", "auto", "--objective", "z", "--autonomy", "full"])
+        print("-- full autonomy (the default)")
+        run(["new", "--slug", "auto", "--objective", "z"])
         run(["accept", "w", "--slug", "auto"])
         run(["verifier", "v", "--slug", "auto"])
         run(["activate", "--slug", "auto", "--no-hooks"])
         s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "auto" / "state.json").read_text())
-        check("full autonomy sets guard off and unbounded limits",
-              s["guard"] is False and s["limits"]["max_continues"] == 0
+        check("full autonomy is the default: guard off, unbounded limits",
+              s.get("autonomy") == "full" and s["guard"] is False
+              and s["limits"]["max_continues"] == 0
               and s["limits"]["idle_limit"] == 0, str(s["limits"]))
         for i in range(DEFAULT_IDLE_LIMIT + 3):
             r = run(["hook", "stop"], stdin=json.dumps({"prompt_id": f"auto{i}"}))
@@ -1373,9 +1374,10 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["compact", "focused", "full"])
     n.add_argument("--max-continues", type=int, default=DEFAULT_MAX_CONTINUES)
     n.add_argument("--deadline-minutes", type=int, default=0)
-    n.add_argument("--autonomy", default="standard", choices=["standard", "full"],
-                   help="full: unbounded continuations, no idle pause, guard off — "
-                        "runs until complete or blocked")
+    n.add_argument("--autonomy", default="full", choices=["standard", "full"],
+                   help="full (default): unbounded continuations, no idle pause, "
+                        "guard off — runs until complete or blocked; "
+                        "standard: supervised, bounded gate with guard")
     n.add_argument("--force", action="store_true")
     n.set_defaults(func=cmd_new)
 
