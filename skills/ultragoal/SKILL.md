@@ -10,22 +10,23 @@ hooks:
           statusMessage: Ultragoal gate
           timeout: 30
           command: >-
-            sh -c 'for d in "$ULTRAGOAL_HOME" "$CLAUDE_SKILL_DIR"
-            "$CLAUDE_PLUGIN_ROOT/skills/ultragoal"
-            "$CLAUDE_PROJECT_DIR/.claude/skills/ultragoal"
+            sh -c 'for d in "${CLAUDE_PLUGIN_ROOT}" "$CLAUDE_PLUGIN_ROOT"
+            "$ULTRAGOAL_HOME" "$CLAUDE_PROJECT_DIR/.claude/skills/ultragoal"
             "$HOME/.claude/skills/ultragoal"
             "$HOME/.claude/skills/synced/ultragoal"; do [ -n "$d" ] &&
             [ -f "$d/scripts/ultragoal.py" ] &&
-            exec python3 "$d/scripts/ultragoal.py" hook stop; done; exit 0'
+            exec python3 "$d/scripts/ultragoal.py" hook stop; done;
+            echo "{\"systemMessage\": \"ultragoal: engine not found — the goal
+            gate is NOT armed. Reinstall to ~/.claude/skills/ultragoal or run
+            install_hooks.py --include-stop.\"}"; exit 0'
   PreToolUse:
-    - matcher: Bash|Edit|Write|NotebookEdit
+    - matcher: Bash|Edit|Write|NotebookEdit|AskUserQuestion
       hooks:
         - type: command
           timeout: 20
           command: >-
-            sh -c 'for d in "$ULTRAGOAL_HOME" "$CLAUDE_SKILL_DIR"
-            "$CLAUDE_PLUGIN_ROOT/skills/ultragoal"
-            "$CLAUDE_PROJECT_DIR/.claude/skills/ultragoal"
+            sh -c 'for d in "${CLAUDE_PLUGIN_ROOT}" "$CLAUDE_PLUGIN_ROOT"
+            "$ULTRAGOAL_HOME" "$CLAUDE_PROJECT_DIR/.claude/skills/ultragoal"
             "$HOME/.claude/skills/ultragoal"
             "$HOME/.claude/skills/synced/ultragoal"; do [ -n "$d" ] &&
             [ -f "$d/scripts/ultragoal.py" ] &&
@@ -74,7 +75,8 @@ Three mechanisms make the goal real rather than advisory:
    ending and re-injects the contract, current phase, next action, unmet
    acceptance conditions, and last verifier result. You cannot drift away from
    the goal or quietly stop early. Release it only with `complete`, `block`,
-   `await`, `waiting`, or `pause`.
+   `await`, `waiting`, or `pause` — and under full autonomy, `await` is
+   reserved for an irreversible decision outside the goal's scope.
 2. **Session resume.** A `SessionStart` hook, installed at activation, restores
    goal state on restart, `/clear`, and compaction, so the goal outlives the
    context window.
@@ -151,7 +153,7 @@ bypassing approval gates.
 | `UG assurance <compact\|focused\|full> [--lane <name> --finding "<text>"]` | assurance tier and lanes |
 | `UG complete` | close the goal; proof is enforced |
 | `UG block "<blocker>" --evidence "<ref>"` | evidence-backed external blocker |
-| `UG await "<decision needed>"` | release the gate for a human decision |
+| `UG await "<decision needed>"` | release for a human decision (full autonomy: irreversible out-of-scope only) |
 | `UG waiting "<what>" --signal "<how you get woken>"` | release for an external wait |
 | `UG pause ["reason"]` / `UG resume` | stand down / re-arm |
 | `UG config --autonomy standard` | supervised: bounded gate, idle pause, guard on |
@@ -327,9 +329,12 @@ Red-team the draft before arming the gate:
 - Is completion observable outside this session?
 
 Then run `UG activate`. This is the final action of activation — do not
-merely say a goal should be set. Report the bundle path, the armed gate, the
-continuation budget, and how to stop it. Then continue task work under Active
-Goal Discipline.
+merely say a goal should be set. Report the bundle path, the armed gate and
+its mode (unbounded, or the budget in effect), and how to stop it. For a
+walk-away run, remind the user once that the host force-ends a turn after 8
+consecutive gate blocks unless the session was launched with
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0` (or a higher cap). Then continue task
+work under Active Goal Discipline.
 
 ## Goal packet
 
@@ -352,12 +357,12 @@ While a goal is active:
 - run the strongest applicable deterministic verifier through `UG verify` before any model review; earlier model review is advisory and is never completion evidence;
 - verify interactive outcomes on the closest actual user surface or a recorded equal-strength equivalent;
 - satisfy the selected assurance tier before completion; reviewer agreement never substitutes for the verifier;
-- make every continuation add evidence, reduce uncertainty, move the verifier, or change the hypothesis — the gate auto-pauses when it does not;
+- make every continuation add evidence, reduce uncertainty, move the verifier, or change the hypothesis — under `--autonomy standard` the gate auto-pauses when it does not, and under full autonomy nothing will stop you, so wasted continuations are yours to notice and correct;
 - record concise task-local lessons with `UG lesson` and apply them to later phases and worker packets;
 - adapt methods freely inside the contract, but never treat learning as permission to weaken the outcome, acceptance, proof boundary, anti-cheating rules, approval gates, or completion standard;
 - retry an identical mechanical failure at most once, after changing the setup or packet;
 - after two consecutive verifier failures with no measurable progress, or three failures within one approach, stop that approach, return to Research and Plan, and escalate the blocked decision — not the whole workflow;
-- after three distinct evidence-backed approaches fail, `UG attempt`-ledger them, summarize, recommend the next move, and take it autonomously when it stays inside the contract; `await` only when the next option changes scope, risk, proof, or approval boundaries;
+- after three distinct evidence-backed approaches fail, `UG attempt`-ledger them, summarize, recommend the next move, and take it autonomously when it stays inside the contract; `await` only for an irreversible choice outside the goal's scope (supervised goals may also await when the next option changes scope, risk, proof, or approval boundaries);
 - never respond to failure by spawning more peers or repeating identical polling; for waits, use a background `Bash` task or `Monitor` and `UG waiting --signal ...` rather than sleeping;
 - decide open in-scope questions yourself, record them with `UG decide`, and continue — `AskUserQuestion` and `UG await` are only for supervised (`standard`) goals or an irreversible decision outside the goal's scope;
 - mark complete only when `UG complete` accepts the proof; mark blocked only with evidence and no meaningful remaining progress;

@@ -122,8 +122,10 @@ As the parent:
 5. Separate required repairs from optional follow-up.
 
 Fix evidence-backed issues inside the contract without asking. Return to Plan
-when a fix changes scope, risk, verifier, or approval boundaries; ask only for a
-consequential human decision.
+when a fix changes scope, risk, verifier, or approval boundaries — under full
+autonomy decide the boundary question yourself and record it with `UG decide`
+(asking is reserved for an irreversible choice outside the goal's scope);
+supervised goals may ask for a consequential human decision.
 
 ## Completion Standard
 

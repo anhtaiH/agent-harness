@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Register Ultragoal's hooks in a Claude Code settings file.
 
-The skill's own frontmatter arms the Stop gate and the anti-cheating guard for
-the session that invokes `/ultragoal`. Only one thing cannot come from
-frontmatter: a `SessionStart` hook, because by the time a skill loads the
-session has already started. That is the hook that makes a goal survive a
-restart, a `/clear`, or a compaction, so `activate` installs it here.
+The skill's frontmatter arms the Stop gate and the guard for the session that
+invokes `/ultragoal`, but frontmatter hooks die with the session and their
+locator depends on the install layout. `activate` therefore installs all three
+hooks here with ABSOLUTE paths — Stop (the gate), SessionStart (resume after
+restart, `/clear`, or compaction — the one hook frontmatter can never supply),
+and PreToolUse (the AskUserQuestion block plus the optional guard) — so an
+active goal keeps its machinery across sessions regardless of layout.
 
 Default scope is the project's `.claude/settings.local.json` (personal, not
 committed). `--user` writes `~/.claude/settings.json` instead.
@@ -137,7 +139,7 @@ def install(scope: str = "project", script: Path = None,
     if include_guard:
         pre = hooks.setdefault("PreToolUse", [])
         if not _has_ours(pre):
-            pre.append({"matcher": "Bash|Edit|Write|NotebookEdit",
+            pre.append({"matcher": "Bash|Edit|Write|NotebookEdit|AskUserQuestion",
                         "hooks": [_entry(script, "pre-tool")]})
             added.append("PreToolUse")
 

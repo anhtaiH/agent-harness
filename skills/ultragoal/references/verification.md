@@ -59,7 +59,9 @@ every later run follows it — worth doing inside a long goal whose verifier is
 
 When a check is slow, run it in the background and keep working. `UG waiting
 "CI on PR 214" --signal "subscribe_pr_activity"` releases the gate honestly
-instead of burning continuations on polling.
+instead of wasting continuations on polling — but arm a real wake signal
+first; on a local machine with no wake mechanism, prefer a background task
+watched from within the turn.
 
 ## Inventory Relevant Capabilities
 
@@ -122,12 +124,17 @@ that passed.
 2. Treat a local setup failure as an execution failure: change the setup or
    packet before one retry, and preserve the evidence.
 3. If access, authentication, hardware, permission, or an external action is
-   required, continue independent work and request the smallest precise human
-   action only when it becomes the critical path — `UG await "<exact action>"`
-   plus an `AskUserQuestion` with the options.
-4. If only weaker proof remains, return to Plan. Recommend whether to wait for
-   stronger proof, narrow the claim, or explicitly accept the limitation;
-   include the tradeoff and the safe default.
+   required, continue independent work first. When it becomes the critical
+   path: on a full-autonomy goal the user is away — record it as an external
+   blocker with evidence (`UG block`), or `UG waiting` if a real wake signal
+   exists; do not stop to ask. Only a supervised goal requests the smallest
+   precise human action — `UG await "<exact action>"` plus an
+   `AskUserQuestion` with the options.
+4. If only weaker proof remains, return to Plan. Under full autonomy, choose
+   the safe default yourself — wait for stronger proof, narrow the claim, or
+   accept the limitation — and record it with `UG decide`, including the
+   tradeoff. A supervised goal recommends instead, with the tradeoff and the
+   safe default stated.
 5. If the contract still requires the inaccessible surface, record the missing
    completion evidence and apply the blocker standard. Do not mark complete, and
    do not quietly reclassify assurance.
@@ -140,4 +147,8 @@ the reported limitation before continuing.
 
 `UG complete --force` exists for exactly that case. It closes the goal while
 recording every missing proof in the journal, so the gap stays visible. Use it
-only on explicit user acceptance, and say in your report what was forced.
+only when the user accepted the weaker proof — explicitly in conversation, or
+ahead of time in the goal's contract. On a full-autonomy run, acceptance
+cannot be solicited mid-run: if the contract does not already authorize the
+weaker proof, the honest close is `UG block` with the evidence, never a
+forced complete.

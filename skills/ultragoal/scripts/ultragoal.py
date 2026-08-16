@@ -156,13 +156,15 @@ class Bundle:
         return vs[-1] if vs else None
 
     def primary_pass(self) -> dict:
-        """Most recent passing run of the primary verifier, if any."""
+        """The LATEST primary-verifier run, if and only if it passed.
+
+        The newest run decides: an earlier lucky pass followed by failures is
+        not proof. Skipping over newer failures to find a stale pass would let
+        a flaky verifier satisfy `complete`."""
         label = self.state.get("verifier", {}).get("primary_label")
         for v in reversed(self.state.get("verifications") or []):
-            if v["exit_code"] != 0:
-                continue
             if label is None or v.get("label") == label or v.get("primary"):
-                return v
+                return v if v["exit_code"] == 0 else None
         return None
 
 
@@ -287,10 +289,13 @@ def new_state(slug: str, title: str, objective: str, route: str, assurance: str,
         deadline = (datetime.now(timezone.utc) + timedelta(minutes=deadline_minutes)) \
             .replace(microsecond=0).isoformat()
     if autonomy == "full":
-        max_continues = 0   # 0 = unbounded
-        idle_limit = 0      # 0 = anti-spin pause off
+        if max_continues is None:
+            max_continues = 0   # 0 = unbounded
+        idle_limit = 0          # 0 = anti-spin pause off
         guard = False
     else:
+        if max_continues is None:
+            max_continues = DEFAULT_MAX_CONTINUES
         idle_limit = DEFAULT_IDLE_LIMIT
         guard = True
     return {
@@ -406,16 +411,23 @@ def cmd_activate(args):
                 install = None
         if install:
             try:
-                res = install(scope="project", script=Path(__file__).resolve())
-                hook_note = f"\nsession-resume hook: {res}"
+                res = install(scope="project", script=Path(__file__).resolve(),
+                              include_stop=True, include_guard=True)
+                hook_note = f"\nsettings hooks (gate + resume + ask-guard): {res}"
             except BaseException as exc:  # never lose an activation over this
                 hook_note = (f"\nsession-resume hook NOT installed: {exc}"
                              "\n  the goal is still active; resume manually with "
                              "`/ultragoal resume` in a new session")
 
+    mc = b.state["limits"]["max_continues"]
+    il = b.state["limits"]["idle_limit"]
     print(f"goal `{b.slug}` is ACTIVE.")
-    print(f"  stop gate armed: up to {b.state['limits']['max_continues']} continuations, "
-          f"auto-pause after {b.state['limits']['idle_limit']} with no progress")
+    if mc == 0 and il == 0:
+        print("  stop gate armed: unbounded — runs until complete or an "
+              "evidence-backed block")
+    else:
+        print(f"  stop gate armed: up to {mc or '∞'} continuations, "
+              f"auto-pause after {il or '∞'} with no progress")
     print(f"  release with: complete | block | await | waiting | pause{hook_note}")
 
 
@@ -662,6 +674,10 @@ def cmd_await(args):
     b = _release(args, STATUS_AWAITING, args.reason)
     print(f"goal `{b.slug}` is awaiting input — stop gate released.")
     print("Ask the user now (AskUserQuestion), then `resume` after they answer.")
+    if b.state.get("autonomy") == "full":
+        print("note: FULL AUTONOMY goal — await is reserved for an irreversible "
+              "decision outside the goal's scope. If this is not one, `resume`, "
+              "`decide` it, and keep moving.")
 
 
 def cmd_waiting(args):
@@ -757,7 +773,14 @@ def cmd_complete(args):
 
 def cmd_decide(args):
     root = goals_root(args.dir)
-    b = resolve_bundle(root, args.slug)
+    if args.slug:
+        b = resolve_bundle(root, args.slug)
+    else:
+        # Decisions belong to the goal being gated, not to whatever bundle the
+        # CURRENT pointer drifted to (e.g. a follow-up goal drafted mid-run).
+        actives = active_bundles(root)
+        b = (max(actives, key=lambda x: x.state["updated_at"])
+             if actives else resolve_bundle(root, None))
     entry = {"at": now(), "text": args.text, "why": args.why or "",
              "reversible": not args.irreversible}
     b.state.setdefault("decisions", []).append(entry)
@@ -917,6 +940,17 @@ def gate_reason(b: Bundle, script: str) -> str:
         "evidence, or repair a failure. Every continuation must add evidence, "
         "reduce uncertainty, move the verifier, or change the hypothesis.",
     ]
+    mc, il = lim["max_continues"], lim["idle_limit"]
+    if mc == 0 and il == 0:
+        budget_line = (f"Continuation {c['stop_blocks']} — unbounded: the goal "
+                       "runs until complete or blocked. The user can stop it at "
+                       "any time with Esc or `/ultragoal pause`.")
+    else:
+        budget_line = (f"Continuation {c['stop_blocks']}/{mc or '∞'}; "
+                       f"{c['idle_blocks']}/{il or '∞'} consecutive continuations "
+                       "with no recorded progress (the gate auto-pauses at a "
+                       "reached limit). The user can stop this at any time with "
+                       "Esc or `/ultragoal pause`.")
     if s.get("autonomy", "standard") == "full":
         lines += [
             "",
@@ -934,9 +968,7 @@ def gate_reason(b: Bundle, script: str) -> str:
             f"  {ug} block \"<blocker>\" --evidence \"<ref>\"   # truly external, evidence-backed",
             f"  {ug} waiting \"<what>\" --signal \"<how you get woken>\"",
             "",
-            f"Continuation {c['stop_blocks']} — unbounded: the goal runs until "
-            "complete or blocked. The user can stop it at any time with Esc or "
-            "`/ultragoal pause`.",
+            budget_line,
         ]
     else:
         lines += [
@@ -948,10 +980,7 @@ def gate_reason(b: Bundle, script: str) -> str:
             f"  {ug} waiting \"<what>\" --signal \"<how you get woken>\"",
             f"  {ug} pause \"<reason>\"           # stand down",
             "",
-            f"Continuation {c['stop_blocks']}/{lim['max_continues']}; "
-            f"{c['idle_blocks']}/{lim['idle_limit']} consecutive continuations with no "
-            "recorded progress (the gate auto-pauses when either limit is reached).",
-            "The user can stop this at any time with Esc or `/ultragoal pause`.",
+            budget_line,
         ]
     return "\n".join(lines)
 
@@ -1027,11 +1056,10 @@ def hook_stop(payload: dict) -> None:
     b.save()
     b.log("gate", decision="block", stop_blocks=c["stop_blocks"],
           idle_blocks=c["idle_blocks"])
-    emit({"hookSpecificOutput": {
-        "hookEventName": "Stop",
-        "decision": "block",
-        "reason": gate_reason(b, script),
-    }})
+    # Claude Code honors Stop blocks ONLY as top-level decision/reason
+    # (live-verified); a hookSpecificOutput "Stop" variant does not exist in
+    # the host schema and is discarded as a non-blocking error.
+    emit({"decision": "block", "reason": gate_reason(b, script)})
     sys.exit(0)
 
 
@@ -1064,8 +1092,14 @@ def hook_session_start(payload: dict) -> None:
         parts.append(
             f"NOTE: `{active[0].slug}` is ACTIVE, so the stop gate is armed for this "
             "session and turns will not end until it is released.")
+    # SessionStart is the mirror image of Stop: the host reads
+    # additionalContext ONLY from hookSpecificOutput (live-verified); a
+    # top-level additionalContext is stripped by schema validation.
     emit({
-        "additionalContext": "\n".join(parts),
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "\n".join(parts),
+        },
         "systemMessage": f"Ultragoal: {len(bundles)} open goal(s) restored from "
                          f"{root}",
     })
@@ -1113,9 +1147,6 @@ def hook_pre_tool(payload: dict) -> None:
     if not actives:
         sys.exit(0)
     b = max(actives, key=lambda x: x.state["updated_at"])
-    if not b.state.get("guard", True):
-        sys.exit(0)
-
     tool = payload.get("tool_name", "")
     ti = payload.get("tool_input") or {}
 
@@ -1124,8 +1155,23 @@ def hook_pre_tool(payload: dict) -> None:
             "hookEventName": "PreToolUse",
             "permissionDecision": kind,
             "permissionDecisionReason":
-                f"Ultragoal `{b.slug}` guard: {reason}",
+                f"Ultragoal `{b.slug}`: {reason}",
         }})
+        sys.exit(0)
+
+    # Full autonomy bans mid-run questions mechanically, not just in prose.
+    # This runs even with the guard off; `UG await` first releases the gate
+    # (status leaves ACTIVE), so the sanctioned irreversible-out-of-scope ask
+    # is still possible after an explicit await.
+    if tool == "AskUserQuestion" and b.state.get("autonomy") == "full":
+        decide("deny",
+               "this goal runs at FULL AUTONOMY — the user is away and reviews "
+               "after completion. Decide it yourself, record it with "
+               "`ultragoal.py decide \"<choice>\" --why \"<reason>\"`, and keep "
+               "moving. For an irreversible decision outside the goal's scope, "
+               "run `ultragoal.py await \"<decision>\"` first, then ask.")
+
+    if not b.state.get("guard", False):
         sys.exit(0)
 
     if tool in ("Bash", "PowerShell"):
@@ -1230,8 +1276,9 @@ def cmd_selftest(args):
         payload = json.dumps({"hook_event_name": "Stop", "prompt_id": "p1"})
         r = run(["hook", "stop"], stdin=payload)
         out = json.loads(r.stdout or "{}")
-        blocked = out.get("hookSpecificOutput", {}).get("decision") == "block"
-        check("gate blocks while active", blocked, r.stdout[:200])
+        check("gate blocks with host-honored top-level decision",
+              out.get("decision") == "block" and "hookSpecificOutput" not in out,
+              r.stdout[:200])
         check("gate reason names the release commands",
               "complete" in r.stdout and "block" in r.stdout and "await" in r.stdout)
 
@@ -1281,8 +1328,11 @@ def cmd_selftest(args):
 
         print("-- session-start resume")
         r = run(["hook", "session-start"], stdin=json.dumps({"source": "startup"}))
-        ctx = json.loads(r.stdout or "{}").get("additionalContext", "")
-        check("session-start re-injects open goals", "Ultragoal" in ctx, r.stdout[:200])
+        out = json.loads(r.stdout or "{}")
+        ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("session-start injects via hookSpecificOutput (host contract)",
+              (out.get("hookSpecificOutput") or {}).get("hookEventName") == "SessionStart"
+              and "Ultragoal" in ctx, r.stdout[:200])
 
         print("-- pre-tool guard")
         run(["resume", "--slug", "fail"])
@@ -1319,17 +1369,84 @@ def cmd_selftest(args):
         s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "auto" / "state.json").read_text())
         check("gate never auto-pauses under full autonomy",
               s["status"] == STATUS_ACTIVE, s["status"])
-        dec = json.loads(r.stdout or "{}").get("hookSpecificOutput", {})
-        check("full-autonomy gate keeps blocking", dec.get("decision") == "block",
-              r.stdout[:200])
+        out = json.loads(r.stdout or "{}")
+        check("full-autonomy gate keeps blocking (top-level decision)",
+              out.get("decision") == "block", r.stdout[:200])
         check("full-autonomy reason directs deciding, not asking",
               "FULL AUTONOMY" in r.stdout and "decide" in r.stdout, r.stdout[:200])
-        r = run(["decide", "--slug", "auto", "prefer sqlite", "--why", "single writer"])
+
+        ask_in = json.dumps({"tool_name": "AskUserQuestion", "tool_input": {}})
+        r = run(["hook", "pre-tool"], stdin=ask_in)
+        dec = json.loads(r.stdout or "{}").get("hookSpecificOutput", {})
+        check("AskUserQuestion denied mid-run even with guard off",
+              dec.get("permissionDecision") == "deny", r.stdout[:200])
+
+        run(["new", "--slug", "draftb", "--objective", "q"])  # CURRENT -> draftb
+        r = run(["decide", "prefer sqlite", "--why", "single writer"])
         check("decide records an autonomous decision", r.returncode == 0, r.stderr)
+        s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "auto" / "state.json").read_text())
+        check("decide targets the ACTIVE goal, not the CURRENT pointer",
+              any(d.get("text") == "prefer sqlite" for d in s.get("decisions", [])),
+              str(s.get("decisions")))
         r = run(["report", "--slug", "auto"])
         check("report lists decisions for post-run review",
               "Autonomous decisions to review (1)" in r.stdout, r.stdout[:300])
+
+        run(["new", "--slug", "capped", "--objective", "c", "--max-continues", "50"])
+        s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "capped" / "state.json").read_text())
+        check("explicit --max-continues survives full autonomy",
+              s["limits"]["max_continues"] == 50 and s.get("autonomy") == "full",
+              str(s["limits"]))
         run(["pause", "--slug", "auto"])
+
+        print("-- supervised budget and latest-run proof")
+        run(["new", "--slug", "bud", "--objective", "b", "--autonomy", "standard",
+             "--max-continues", "1"])
+        run(["accept", "y", "--slug", "bud"])
+        run(["verifier", "bv", "--slug", "bud"])
+        run(["activate", "--slug", "bud", "--no-hooks"])
+        for i in range(2):
+            r = run(["hook", "stop"], stdin=json.dumps({"prompt_id": f"bud{i}"}))
+        s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "bud" / "state.json").read_text())
+        check("standard budget exhausts and auto-pauses",
+              s["status"] == STATUS_PAUSED and "budget" in r.stdout, s["status"])
+
+        run(["new", "--slug", "flaky", "--objective", "f"])
+        run(["accept", "z", "--slug", "flaky"])
+        run(["verifier", "fv", "--slug", "flaky"])
+        run(["verify", "--slug", "flaky", "--primary", "--label", "fv", "--", "true"])
+        run(["verify", "--slug", "flaky", "--primary", "--label", "fv", "--", "false"])
+        run(["met", "A1", "--slug", "flaky", "--evidence", "x"])
+        r = run(["complete", "--slug", "flaky"])
+        check("stale earlier pass does not satisfy completion",
+              r.returncode == 2, r.stdout[:200])
+
+        print("-- pre-autonomy bundle compatibility")
+        leg = Path(env["ULTRAGOAL_DIR"]) / "legacy"
+        (leg / "evidence").mkdir(parents=True, exist_ok=True)
+        (leg / "goal.md").write_text("# legacy\n", encoding="utf-8")
+        (leg / "plan.md").write_text("# p\n", encoding="utf-8")
+        legacy_state = {
+            "schema": 1, "slug": "legacy", "title": "legacy", "objective": "old",
+            "status": "active", "status_reason": "", "route": "light",
+            "assurance": "compact", "proof_boundary": "",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "9999-01-01T00:00:00+00:00",
+            "phase": {"name": "Research", "status": "in_progress", "next_action": ""},
+            "acceptance": [], "verifier": {"primary_label": "t"},
+            "verifications": [], "assurance_lanes": [], "lessons": [],
+            "counters": {"progress": 0, "stop_blocks": 0, "idle_blocks": 0,
+                         "progress_at_last_block": 0, "attempts": 0},
+            "limits": {"max_continues": 40, "idle_limit": 3, "deadline": None},
+            "guard": True, "last_prompt_id": None,
+        }
+        (leg / "state.json").write_text(json.dumps(legacy_state), encoding="utf-8")
+        r = run(["hook", "stop"], stdin=json.dumps({"prompt_id": "leg1"}))
+        out = json.loads(r.stdout or "{}")
+        check("pre-autonomy bundle still gates in supervised mode",
+              out.get("decision") == "block" and "/40" in out.get("reason", ""),
+              r.stdout[:200])
+        run(["pause", "--slug", "legacy"])
 
         print("-- resilience")
         (Path(env["ULTRAGOAL_DIR"]) / "demo" / "state.json").write_text("{not json")
@@ -1372,7 +1489,10 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--route", default="light", choices=["light", "medium", "heavy"])
     n.add_argument("--assurance", default="compact",
                    choices=["compact", "focused", "full"])
-    n.add_argument("--max-continues", type=int, default=DEFAULT_MAX_CONTINUES)
+    n.add_argument("--max-continues", type=int, default=None,
+                   help="continuation budget; default: unbounded (full autonomy) "
+                        f"or {DEFAULT_MAX_CONTINUES} (standard). Explicit values "
+                        "are honored in either mode; 0 = unbounded")
     n.add_argument("--deadline-minutes", type=int, default=0)
     n.add_argument("--autonomy", default="full", choices=["standard", "full"],
                    help="full (default): unbounded continuations, no idle pause, "

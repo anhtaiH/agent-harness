@@ -32,7 +32,7 @@ files without activating is Design mode, and should be reported as `drafted`.
 | `active` | **on** | work is in progress; turns cannot end | `complete`, `block`, `await`, `waiting`, `pause` |
 | `waiting` | off | an external process must finish first | `resume` |
 | `awaiting-input` | off | a consequential human decision is pending | `resume` |
-| `paused` | off | user stood it down, or a budget tripped | `resume` |
+| `paused` | off | user stood it down, or a supervised goal's budget tripped | `resume` |
 | `blocked` | off | evidence-backed external blocker, no progress left | `resume` |
 | `complete` | off | proof accepted | terminal |
 
@@ -47,42 +47,59 @@ scheduled wake. Record it with `--signal`. Do not sleep-poll.
 
 ## The Three Hooks
 
-**Stop gate** (`hook stop`, armed by skill frontmatter). While a goal is
-`active`, it returns `decision: "block"` and re-injects the contract, phase,
-next action, unmet acceptance conditions, last verifier result, and the exact
-release commands. This is what makes long-running execution real: the turn
-cannot end merely because the model felt finished. It also repairs context loss
-— after compaction the goal state comes back on the next stop attempt.
+**Stop gate** (`hook stop`, armed by skill frontmatter and, from first
+activation, by an absolute-path entry in `.claude/settings.local.json`). While
+a goal is `active`, it returns a top-level `{"decision": "block", "reason":
+...}` — the only shape the host honors for Stop — and the reason re-injects the
+contract, phase, next action, unmet acceptance conditions, last verifier
+result, and the exact release commands. This is what makes long-running
+execution real: the turn cannot end merely because the model felt finished. It
+also repairs context loss — after compaction the goal state comes back on the
+next stop attempt.
 
 **Session resume** (`hook session-start`, installed by `activate` into
 `.claude/settings.local.json`). On `startup`, `resume`, `clear`, and `compact`
-it injects the full status of every open goal plus the resume sequence. This is
-the hook that cannot come from skill frontmatter, because by the time a skill
-loads the session has already started.
+it injects the full status of every open goal plus the resume sequence, via
+`hookSpecificOutput.additionalContext` — the only placement the host reads for
+SessionStart. This hook cannot come from skill frontmatter, because by the
+time a skill loads the session has already started.
 
-**Anti-cheating guard** (`hook pre-tool`, armed by skill frontmatter). Narrow
-and high-confidence. It denies force-pushes and `--no-verify` while a goal is
-active, denies deleting the goal bundle, and *asks* before removing or skipping
-tests or editing the acceptance/verifier sections of `goal.md`. It targets the
-goal's own proof surface; ordinary development is untouched. `UG config --guard
-off` disables it per goal.
+**Question block and anti-cheating guard** (`hook pre-tool`, armed by skill
+frontmatter and by `activate`'s settings entry). Two independent layers:
 
-All three exit silently when no goal is active, and any internal error exits 0
+- While a **full-autonomy** goal is active, `AskUserQuestion` is *denied*
+  mechanically — the model is told to decide, record with `UG decide`, and
+  keep moving. `UG await` first (which releases the gate) re-permits asking
+  for the sanctioned irreversible-out-of-scope case.
+- The **guard** is **off by default** (full autonomy). When armed — by
+  `--autonomy standard` or `UG config --guard on` — it denies force-pushes and
+  `--no-verify`, denies deleting the goal bundle, and *asks* before removing
+  or skipping tests or editing the acceptance/verifier sections of `goal.md`.
+
+All hooks exit silently when no goal is active, and any internal error exits 0
 with no output. A broken goal file can never wedge a session.
 
 ## Guardrails on the Gate
 
-The gate is bounded in three independent ways, and every limit auto-pauses
-rather than stopping silently:
+**By default there are none** — a full-autonomy goal runs until `complete` or
+an evidence-backed `block`. Three optional bounds exist, each auto-pausing
+rather than stopping silently; the first two arm automatically under
+`--autonomy standard`:
 
-- **Continuation budget** — default 40 blocked stops. Set at creation with
-  `--max-continues`, or later with `UG config --max-continues N`.
-- **Anti-spin** — 3 consecutive continuations that record no progress. Progress
-  means a `verify`, `evidence`, `met`, `phase`, `next`, `attempt`, `lesson`, or
-  `assurance` call. Spinning in the model's head does not count.
-- **Wall clock** — optional, `--deadline-minutes` at creation.
+- **Continuation budget** — 40 blocked stops in standard mode; any explicit
+  `--max-continues N` is honored in either mode (0 = unbounded).
+- **Anti-spin** — 3 consecutive continuations that record no progress
+  (standard mode). Progress means a `verify`, `evidence`, `decide`, `met`,
+  `phase`, `next`, `attempt`, `lesson`, or `assurance` call. Spinning in the
+  model's head does not count.
+- **Wall clock** — optional in either mode, `--deadline-minutes` at creation.
 
-The user always outranks all three: Esc interrupts, `/ultragoal pause` stands
+One bound belongs to the host, not the skill: Claude Code force-ends a turn
+after 8 consecutive stop-hook blocks. For a long walk-away run the session
+should be launched with `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0` (unlimited) or a
+higher cap.
+
+The user always outranks everything: Esc interrupts, `/ultragoal pause` stands
 down. Say so when you report activation.
 
 ## Apply the Artifact Rule
@@ -171,26 +188,35 @@ On interruption or restart:
    smallest safe next action under the existing contract.
 6. Return to Research or Plan only when new evidence changes a boundary.
 
-Do not ask the user to reconstruct discoverable context. Ask only when
-resumption exposes a new consequential decision, approval gate, or required
-external action.
+Do not ask the user to reconstruct discoverable context. Under full autonomy,
+do not ask at all: when resumption exposes a new in-scope decision, make the
+call, record it with `UG decide`, and continue — `await` remains reserved for
+an irreversible decision outside the goal's scope. Supervised goals may ask
+when resumption exposes a new consequential decision, approval gate, or
+required external action.
 
 ## Running Unattended
 
-For genuinely hands-off runs, tell the user the three levers rather than
-choosing invasively for them:
+Unattended is the design center, not a mode: every flagless goal already runs
+at full autonomy — no budget, no idle pause, no guard, questions banned after
+activation. What remains are environment levers that live outside the skill.
+Mention them once at activation when they matter to the user's run:
 
-- **Permission mode.** `claude --permission-mode acceptEdits` removes edit
-  prompts; `dontAsk` auto-denies anything not pre-approved, which pairs well
-  with a tight `permissions.allow` list. `bypassPermissions` belongs only in a
-  container or VM.
-- **Fewer prompts.** `activate` already allows the engine's own commands. The
-  bundled `/fewer-permission-prompts` skill can add the project's common
-  read-only commands.
-- **Scheduled continuation.** For a goal that spans hours, `/loop` re-enters on
-  an interval or self-paced, and a scheduled task can fire `/ultragoal resume`.
-  In cloud sessions, a routine can wake a fresh session that reads the bundle
-  from the repository — which only works if the bundle is committed.
+- **Permission mode.** The walk-away recipe is
+  `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0 claude --dangerously-skip-permissions`
+  (refused when running as root — there, `--permission-mode acceptEdits` plus
+  an allow list is the fallback). `activate` already allows the engine's own
+  commands; the bundled `/fewer-permission-prompts` skill can add the
+  project's common read-only commands.
+- **The host block cap.** Without `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0`, Claude
+  Code force-ends the turn after 8 consecutive gate blocks regardless of the
+  goal's own unbounded gate.
+- **Session death.** No hook can start a turn. If the session dies (usage
+  limit, crash, machine sleep), the goal's state survives on disk but sits
+  idle until something sends a prompt: the user returning, `/loop`, or a
+  scheduled task firing `/ultragoal resume`. For runs that must outlive the
+  session, arm one of those before walking away, and in cloud sessions commit
+  the bundle so a fresh session can read it.
 
-`--unattended` in the user's request means: never ask, record assumptions
-instead, and reserve `await` for decisions that would be unsafe to make alone.
+`--unattended` in the user's request is accepted and redundant — it names the
+default. Only an explicit request for supervision changes the posture.

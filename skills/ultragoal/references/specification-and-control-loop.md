@@ -37,10 +37,12 @@ Classify the draft:
 - **Needs decisions** — an irreducible choice changes outcome, scope, permissions, risk, cost, or proof. Do not activate.
 - **Not goal fit** — success is taste-only, one-shot, unbounded, or lacks a credible verifier. Recommend an ordinary task or a Design packet.
 
-Plan mode pairs naturally with this gate. `EnterPlanMode` keeps you read-only
-while you ground the contract; `ExitPlanMode` is the user's approval of the
-approach, after which activation and mutation begin. Use it when the plan itself
-is the risky part; skip it for a clear routine goal.
+Plan mode can pair with this gate in an interactive session where the user
+asked for supervision: `EnterPlanMode` keeps you read-only while you ground
+the contract, and `ExitPlanMode` is the user's approval of the approach. Never
+use it on a full-autonomy or headless run — `ExitPlanMode` blocks on a human
+and would stall the whole invocation. There, the readiness gate and the
+acceptance audit below are the approval.
 
 ## Acceptance Audit
 
@@ -78,13 +80,15 @@ the tradeoff, and use `multiSelect` only when the choices genuinely combine.
 Two to four real options; do not manufacture choices for a routine
 implementation detail.
 
-If the question arrives while a goal is already active, run `UG await
-"<decision>"` first so the gate releases while the user thinks, then `UG resume`
-with the answer recorded in `goal.md`.
-
-Under `--unattended`, do not ask at all: record the recommended assumption, note
-it as a decision in `goal.md`, and reserve `await` for a choice that would be
-unsafe to make alone.
+The frontier closes at activation. If a question arrives while a goal is
+already active, the default (full autonomy) answer is: do not ask. Make the
+call, record it with `UG decide "<choice>" --why "<reason>"`, note it in
+`goal.md`, and keep moving — the user audits the decision log after
+completion. `UG await` first, then the question, is reserved for an
+irreversible decision outside the goal's scope. Only on a goal the user
+explicitly placed under supervision (`--autonomy standard`) is mid-run
+`UG await` + ask the normal path, with `UG resume` after the answer is
+recorded in `goal.md`.
 
 ## Adaptive Research–Options–Plan–Execute–Review
 
@@ -93,7 +97,7 @@ unsafe to make alone.
 | Research | Inspect canonical sources, baseline, constraints, failures, unknowns; avoid mutation. | Facts suffice to draft the contract and expose remaining decisions. |
 | Options | Compare materially different approaches; recommend the least complex likely to pass. | One approach selected, or no meaningful tradeoff exists. |
 | Plan | Finalize acceptance, verifier, bounded steps, ownership, approvals, write scope. | Specification is ready; in Activate mode, `UG activate` succeeds. |
-| Execute | Make scoped changes, run checks, record deviations and evidence. | Proof passes, new evidence forces re-planning, or a human gate is reached. |
+| Execute | Make scoped changes, run checks, record deviations and evidence. | Proof passes, new evidence forces re-planning, or (supervised goals) a predeclared approval gate is reached. |
 | Review | Compare actual outcome to intent, run independent proof, inspect regressions and authorized deviations. | Complete with evidence, return to Execute, return to Research/Plan, or enter decision review. |
 
 Mirror the phase into state with `UG phase "<name>" --status in_progress --next
@@ -106,9 +110,12 @@ to Plan.
 
 Count progress only when an iteration produces at least one of: new evidence,
 reduced uncertainty, an improved artifact, a changed hypothesis, or measurable
-verifier movement. The engine counts the same way — three consecutive
-continuations with no recorded progress auto-pause the goal — so recording
-progress is not bookkeeping, it is what keeps the goal alive.
+verifier movement. Record it (`verify`, `evidence`, `decide`, `attempt`,
+`phase`, `next`, `lesson`) — the journal is the run's audit trail. On a
+supervised goal the engine also counts the same way and auto-pauses after
+three consecutive continuations with no recorded progress; on a full-autonomy
+goal nothing will pause you, which makes honest self-accounting more
+important, not less — spin the engine cannot stop is spin you must notice.
 
 Maintain the attempt ledger for non-trivial failures:
 
@@ -130,11 +137,13 @@ Apply this ladder:
    third failure within one approach despite marginal progress — abandon that
    approach, return to Research and Plan, and change the hypothesis. Escalate
    one model or effort rung only when the evidence shows a reasoning gap.
-4. After three distinct evidence-backed approaches fail, pause before a fourth
-   for a decision review: what was tried, strongest evidence, remaining
-   uncertainty, recommendation, meaningful options. Execute the recommendation
-   autonomously when it stays inside the existing scope, risk, proof, and
-   approval contract; ask only when the next choice changes one of those.
+4. After three distinct evidence-backed approaches fail, run a decision review
+   in place — what was tried, strongest evidence, remaining uncertainty,
+   recommendation, meaningful options — record it in the journal, and execute
+   the recommendation autonomously when it stays inside the existing scope,
+   risk, proof, and approval contract. Under full autonomy, `await` only for
+   an irreversible choice outside the goal's scope; a supervised goal may
+   also ask when the next choice changes scope, risk, proof, or approvals.
 5. Do not create more peers because an attempt failed. Delegate only a newly
    separable evidence or implementation lane.
 6. For waits, name the expected state change and a useful timeout. Do not repeat

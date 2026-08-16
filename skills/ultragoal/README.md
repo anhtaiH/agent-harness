@@ -108,27 +108,36 @@ releases the gate for an external process, with the wake signal recorded.
 
 Ask for supervision in plain language ("check with me before risky steps")
 and the goal runs bounded instead: a 40-continuation budget, an auto-pause
-after 3 consecutive continuations with no recorded progress, an optional
-wall-clock deadline (`--deadline-minutes`), the anti-cheating guard, and
-`await` when a decision is genuinely yours.
+after 3 consecutive continuations with no recorded progress, the
+anti-cheating guard, and `await` when a decision is genuinely yours. An
+explicit wall-clock deadline (`--deadline-minutes`) is honored in either
+mode, as is an explicit `--max-continues`.
 
 ## Running hands-off
 
-The gate keeps Claude working; permissions decide whether it needs you.
+The gate keeps Claude working; permissions decide whether it needs you; and
+one host limit needs disarming — Claude Code force-ends a turn after 8
+consecutive gate blocks unless told otherwise.
 
 ```bash
-claude --dangerously-skip-permissions         # zero prompts (refused when root)
-claude --permission-mode acceptEdits          # no edit prompts
-claude -p "/ultragoal <request>"              # headless, one shot
+CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=0 claude --dangerously-skip-permissions
 ```
 
-The whole walk-away recipe: launch with `--dangerously-skip-permissions`,
-type `/ultragoal <request>`, leave. Nothing prompts, nothing pauses; the
-decision log is in `report` when you come back.
+That is the whole walk-away recipe: launch like that (bypass mode is refused
+when running as root — use `--permission-mode acceptEdits` plus an allow list
+there), type `/ultragoal <request>`, leave. Nothing prompts, nothing pauses;
+the decision log is in `report` when you come back. On first activation the
+skill writes the gate, resume, and question-block hooks with absolute paths
+into the repo's `.claude/settings.local.json`, so enforcement no longer
+depends on how or where the skill was installed.
 
-For longer runs, `/loop` re-enters on an interval or self-paced, and a
-scheduled task can fire `/ultragoal resume`. Cloud sessions and routines start
-fresh each time, so commit the goal bundle if you want them to pick it up.
+One honest limit: no hook can *start* a turn. If the session itself dies — a
+usage limit, a crash, the machine sleeping — the goal's state survives on
+disk, but it sits idle until something sends a prompt. For runs that must
+outlive the session, arm `/loop` or a scheduled task firing
+`/ultragoal resume` before walking away, and keep the machine awake. Cloud
+sessions and routines start fresh each time, so commit the goal bundle if you
+want them to pick it up.
 
 ## Command reference
 
