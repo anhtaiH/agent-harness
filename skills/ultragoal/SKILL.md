@@ -83,9 +83,11 @@ Three mechanisms make the goal real rather than advisory:
    checks through `UG verify -- <command>`: it executes the command and stores
    the real exit code. A claim is never proof.
 
-The gate is bounded, not infinite: it auto-pauses after the continuation budget
-(default 40) or after 3 consecutive continuations that record no progress. The
-user can stop it at any time with Esc or `/ultragoal pause`.
+The gate is bounded by default: it auto-pauses after the continuation budget
+(default 40) or after 3 consecutive continuations that record no progress. A
+goal created with `--autonomy full` removes both bounds and the guard — it runs
+until `complete` or an evidence-backed `block`. The user can stop either kind
+at any time with Esc or `/ultragoal pause`.
 
 ## Modes
 
@@ -106,9 +108,15 @@ concurrency value is required, and the request may rely on conversation context.
 Infer route, models, delegation, and concurrency automatically. State the
 selected route in one line before task work. Honor overrides such as
 `do not delegate`, `use Haiku`, `optimize for speed`, or `--unattended` when
-safe and feasible. `--unattended` means: never ask, resolve every reversible
-ambiguity with a recorded assumption, and `await` only for a decision that
-would be unsafe to make alone.
+safe and feasible. `--unattended` means full autonomy: create the goal with
+`--autonomy full`, and after activation never use `AskUserQuestion` and never
+`await` for anything inside the goal's scope. Make the call yourself, record
+each consequential choice with `UG decide "<choice>" --why "<reason>"`, and
+keep moving; the user reviews the decision log via `UG report` after
+completion. Reserve `await` for an irreversible action outside the goal's
+scope. Pre-activation clarification (the three-question frontier) still
+applies when the request genuinely underdetermines the contract — questions
+end at activation.
 
 Invoking this skill with an execution request grants **delegation authority**:
 bounded subagents as an internal tactic under the selected route. It does not
@@ -121,7 +129,7 @@ bypassing approval gates.
 
 | Command | Use |
 | --- | --- |
-| `UG new --objective "<outcome>" [--title T] [--route R] [--assurance A]` | create the bundle |
+| `UG new --objective "<outcome>" [--title T] [--route R] [--assurance A] [--autonomy full]` | create the bundle |
 | `UG accept "<condition>"` | add an acceptance condition (repeat) |
 | `UG verifier "<label>" --proof-boundary "<surface/role/env>"` | declare the primary verifier |
 | `UG activate` | arm the gate; installs the session-resume hook |
@@ -131,6 +139,7 @@ bypassing approval gates.
 | `UG verify [--primary] [--label L] -- <command>` | run a check, record the real exit code |
 | `UG met <A1> --evidence "<ref>"` / `UG unmet <A1>` | acceptance bookkeeping |
 | `UG evidence "<what it showed>" --ref <path>` | record evidence |
+| `UG decide "<choice>" --why "<reason>" [--irreversible]` | record an autonomous decision, keep moving |
 | `UG attempt --failure <class> --hypothesis H --action A --result R [--lesson L]` | ledger a failed attempt |
 | `UG lesson "<task-local lesson>"` | carry a lesson into later phases |
 | `UG assurance <compact\|focused\|full> [--lane <name> --finding "<text>"]` | assurance tier and lanes |
@@ -139,6 +148,7 @@ bypassing approval gates.
 | `UG await "<decision needed>"` | release the gate for a human decision |
 | `UG waiting "<what>" --signal "<how you get woken>"` | release for an external wait |
 | `UG pause ["reason"]` / `UG resume` | stand down / re-arm |
+| `UG config --autonomy full` | unbounded gate, no idle pause, guard off |
 | `UG config --guard off` | disable the anti-cheating guard |
 
 ## Execution routes
@@ -343,6 +353,6 @@ While a goal is active:
 - after two consecutive verifier failures with no measurable progress, or three failures within one approach, stop that approach, return to Research and Plan, and escalate the blocked decision — not the whole workflow;
 - after three distinct evidence-backed approaches fail, `UG attempt`-ledger them, summarize, recommend the next move, and take it autonomously when it stays inside the contract; `await` only when the next option changes scope, risk, proof, or approval boundaries;
 - never respond to failure by spawning more peers or repeating identical polling; for waits, use a background `Bash` task or `Monitor` and `UG waiting --signal ...` rather than sleeping;
-- use `AskUserQuestion` for a genuine decision, and `UG await` so the gate releases while the user is thinking;
+- use `AskUserQuestion` for a genuine decision, and `UG await` so the gate releases while the user is thinking — except under full autonomy, where you decide instead, record it with `UG decide`, and continue;
 - mark complete only when `UG complete` accepts the proof; mark blocked only with evidence and no meaningful remaining progress;
 - preserve partial results and the next action whenever you stop.

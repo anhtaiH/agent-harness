@@ -60,7 +60,7 @@ Other forms:
 | `/ultragoal <request>` | design, audit, activate, execute |
 | `/ultragoal design <request>` | goal packet only, nothing armed |
 | `/ultragoal critique this goal` | tighten an existing goal or draft |
-| `/ultragoal --unattended <request>` | never ask; record assumptions instead |
+| `/ultragoal --unattended <request>` | full autonomy: no questions after activation, no pauses, decisions logged for later review |
 | `/ultragoal status` | where the goal stands |
 | `/ultragoal resume` | reconcile and continue |
 | `/ultragoal pause` | stand down now |
@@ -112,14 +112,25 @@ Claude also releases the gate itself, deliberately, in four other ways:
 `await` (a decision that is genuinely yours), and `waiting` (an external
 process, with the wake signal recorded).
 
+**Full autonomy** (`/ultragoal --unattended ...`, or `--autonomy full` on the
+goal) removes the budget, the idle pause, and the guard: the goal runs until
+`complete` or an evidence-backed `block`, decides open questions itself, and
+logs every call it made for your review in `ultragoal.py report`. Esc and
+`/ultragoal pause` still work at any moment.
+
 ## Running hands-off
 
 The gate keeps Claude working; permissions decide whether it needs you.
 
 ```bash
+claude --dangerously-skip-permissions         # zero prompts (refused when root)
 claude --permission-mode acceptEdits          # no edit prompts
 claude -p "/ultragoal <request>"              # headless, one shot
 ```
+
+For a true walk-away run, combine `--dangerously-skip-permissions` with
+`/ultragoal --unattended <request>`: nothing prompts, nothing pauses, and the
+decision log is waiting in `report` when you come back.
 
 For longer runs, `/loop` re-enters on an interval or self-paced, and a
 scheduled task can fire `/ultragoal resume`. Cloud sessions and routines start
@@ -136,6 +147,7 @@ UG status                     # full state of the open goal
 UG report                     # status plus completion readiness
 UG pause / UG resume          # stand down / re-arm
 UG complete                   # close it (proof enforced)
+UG config --autonomy full         # unbounded, no idle pause, guard off
 UG config --guard off --max-continues 80
 UG selftest                   # end-to-end health check
 ```

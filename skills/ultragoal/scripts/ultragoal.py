@@ -280,11 +280,19 @@ Exit criteria: facts are sufficient to draft the contract and expose remaining d
 
 
 def new_state(slug: str, title: str, objective: str, route: str, assurance: str,
-              max_continues: int, deadline_minutes: int) -> dict:
+              max_continues: int, deadline_minutes: int,
+              autonomy: str = "standard") -> dict:
     deadline = None
     if deadline_minutes:
         deadline = (datetime.now(timezone.utc) + timedelta(minutes=deadline_minutes)) \
             .replace(microsecond=0).isoformat()
+    if autonomy == "full":
+        max_continues = 0   # 0 = unbounded
+        idle_limit = 0      # 0 = anti-spin pause off
+        guard = False
+    else:
+        idle_limit = DEFAULT_IDLE_LIMIT
+        guard = True
     return {
         "schema": SCHEMA,
         "slug": slug,
@@ -312,10 +320,12 @@ def new_state(slug: str, title: str, objective: str, route: str, assurance: str,
         },
         "limits": {
             "max_continues": max_continues,
-            "idle_limit": DEFAULT_IDLE_LIMIT,
+            "idle_limit": idle_limit,
             "deadline": deadline,
         },
-        "guard": True,
+        "guard": guard,
+        "autonomy": autonomy,
+        "decisions": [],
         "last_prompt_id": None,
     }
 
@@ -334,7 +344,7 @@ def cmd_new(args):
     b.evidence_dir.mkdir(exist_ok=True)
     title = args.title or args.objective[:80]
     b._state = new_state(slug, title, args.objective, args.route, args.assurance,
-                         args.max_continues, args.deadline_minutes)
+                         args.max_continues, args.deadline_minutes, args.autonomy)
     b.save()
     if not b.goal_path.exists() or args.force:
         b.goal_path.write_text(
@@ -348,6 +358,9 @@ def cmd_new(args):
     print(f"  goal:  {b.goal_path}")
     print(f"  plan:  {b.plan_path}")
     print(f"  state: {b.state_path}")
+    if b.state.get("autonomy") == "full":
+        print("Autonomy: FULL — unbounded continuations, no idle pause, guard off. "
+              "The goal runs until complete or blocked.")
     print("Fill in goal.md and plan.md, then run `activate`.")
 
 
@@ -742,6 +755,17 @@ def cmd_complete(args):
         print("  forced past: " + "; ".join(report["failures"]))
 
 
+def cmd_decide(args):
+    root = goals_root(args.dir)
+    b = resolve_bundle(root, args.slug)
+    entry = {"at": now(), "text": args.text, "why": args.why or "",
+             "reversible": not args.irreversible}
+    b.state.setdefault("decisions", []).append(entry)
+    b.progress("decision", **entry)
+    b.save()
+    print(f"decision #{len(b.state['decisions'])} recorded: {args.text}")
+
+
 def cmd_report(args):
     root = goals_root(args.dir)
     b = resolve_bundle(root, args.slug)
@@ -753,11 +777,28 @@ def cmd_report(args):
     print("\nCompletion readiness: " + ("READY" if rep["ok"] else "NOT READY"))
     for f in rep["failures"]:
         print(f"  - {f}")
+    decisions = b.state.get("decisions") or []
+    if decisions:
+        print(f"\nAutonomous decisions to review ({len(decisions)}):")
+        for i, d in enumerate(decisions, 1):
+            tail = f" — {d['why']}" if d.get("why") else ""
+            rev = "  [irreversible]" if not d.get("reversible", True) else ""
+            print(f"  {i}. {d['text']}{tail}{rev}")
 
 
 def cmd_config(args):
     root = goals_root(args.dir)
     b = resolve_bundle(root, args.slug)
+    if args.autonomy is not None:
+        b.state["autonomy"] = args.autonomy
+        if args.autonomy == "full":
+            b.state["guard"] = False
+            b.state["limits"]["max_continues"] = 0
+            b.state["limits"]["idle_limit"] = 0
+        else:
+            b.state["guard"] = True
+            b.state["limits"]["max_continues"] = DEFAULT_MAX_CONTINUES
+            b.state["limits"]["idle_limit"] = DEFAULT_IDLE_LIMIT
     if args.guard is not None:
         b.state["guard"] = args.guard == "on"
     if args.max_continues is not None:
@@ -765,7 +806,8 @@ def cmd_config(args):
     if args.idle_limit is not None:
         b.state["limits"]["idle_limit"] = args.idle_limit
     b.save()
-    print(json.dumps({"guard": b.state["guard"], **b.state["limits"]}, indent=2))
+    print(json.dumps({"autonomy": b.state.get("autonomy", "standard"),
+                      "guard": b.state["guard"], **b.state["limits"]}, indent=2))
 
 
 # --------------------------------------------------------------------------
@@ -779,6 +821,7 @@ def render_status(b: Bundle) -> str:
         f"Title: {s['title']}",
         f"Objective: {s['objective']}",
         f"Route: {s['route']} · Assurance: {s['assurance']} · "
+        f"Autonomy: {s.get('autonomy', 'standard')} · "
         f"Proof boundary: {s.get('proof_boundary') or '(unset)'}",
         f"Bundle: {b.dir}",
         f"  goal.md   {b.goal_path}",
@@ -813,10 +856,17 @@ def render_status(b: Bundle) -> str:
         lines.append("Lessons:")
         for l in s["lessons"][-4:]:
             lines.append(f"  - {l['text']}")
+    if s.get("decisions"):
+        lines.append(f"Autonomous decisions ({len(s['decisions'])}, "
+                     "full list in `report`):")
+        for d in s["decisions"][-4:]:
+            lines.append(f"  - {d['text']}")
 
     c, lim = s["counters"], s["limits"]
-    lines.append(f"Counters: continuations {c['stop_blocks']}/{lim['max_continues']} · "
-                 f"idle {c['idle_blocks']}/{lim['idle_limit']} · "
+    mc = lim["max_continues"] or "∞"
+    il = lim["idle_limit"] or "∞"
+    lines.append(f"Counters: continuations {c['stop_blocks']}/{mc} · "
+                 f"idle {c['idle_blocks']}/{il} · "
                  f"attempts {c['attempts']} · progress marks {c['progress']}")
     if s.get("status_reason"):
         lines.append(f"Status note: {s['status_reason']}")
@@ -866,19 +916,43 @@ def gate_reason(b: Bundle, script: str) -> str:
         "Take the next real step: advance the plan, run the verifier, record "
         "evidence, or repair a failure. Every continuation must add evidence, "
         "reduce uncertainty, move the verifier, or change the hypothesis.",
-        "",
-        "Release the gate deliberately with exactly one of:",
-        f"  {ug} complete                   # proof satisfied",
-        f"  {ug} block \"<blocker>\" --evidence \"<ref>\"   # external blocker, evidence-backed",
-        f"  {ug} await \"<decision needed>\"  # a consequential human decision",
-        f"  {ug} waiting \"<what>\" --signal \"<how you get woken>\"",
-        f"  {ug} pause \"<reason>\"           # stand down",
-        "",
-        f"Continuation {c['stop_blocks']}/{lim['max_continues']}; "
-        f"{c['idle_blocks']}/{lim['idle_limit']} consecutive continuations with no "
-        "recorded progress (the gate auto-pauses when either limit is reached).",
-        "The user can stop this at any time with Esc or `/ultragoal pause`.",
     ]
+    if s.get("autonomy", "standard") == "full":
+        lines += [
+            "",
+            "FULL AUTONOMY: the user is away by design and reviews only after "
+            "completion. Do not use AskUserQuestion, and do not stop to ask "
+            "anything. For any open question inside the goal's scope, make the "
+            "call yourself, record it with "
+            f"`{ug} decide \"<choice>\" --why \"<reason>\"`, and keep moving. "
+            "Self-heal: on failure, diagnose, change one thing, re-verify; after "
+            "three distinct evidence-backed approaches fail, ledger them and take "
+            "the strongest next option — do not wait for the user.",
+            "",
+            "Release the gate only with:",
+            f"  {ug} complete                   # proof satisfied",
+            f"  {ug} block \"<blocker>\" --evidence \"<ref>\"   # truly external, evidence-backed",
+            f"  {ug} waiting \"<what>\" --signal \"<how you get woken>\"",
+            "",
+            f"Continuation {c['stop_blocks']} — unbounded: the goal runs until "
+            "complete or blocked. The user can stop it at any time with Esc or "
+            "`/ultragoal pause`.",
+        ]
+    else:
+        lines += [
+            "",
+            "Release the gate deliberately with exactly one of:",
+            f"  {ug} complete                   # proof satisfied",
+            f"  {ug} block \"<blocker>\" --evidence \"<ref>\"   # external blocker, evidence-backed",
+            f"  {ug} await \"<decision needed>\"  # a consequential human decision",
+            f"  {ug} waiting \"<what>\" --signal \"<how you get woken>\"",
+            f"  {ug} pause \"<reason>\"           # stand down",
+            "",
+            f"Continuation {c['stop_blocks']}/{lim['max_continues']}; "
+            f"{c['idle_blocks']}/{lim['idle_limit']} consecutive continuations with no "
+            "recorded progress (the gate auto-pauses when either limit is reached).",
+            "The user can stop this at any time with Esc or `/ultragoal pause`.",
+        ]
     return "\n".join(lines)
 
 
@@ -930,7 +1004,7 @@ def hook_stop(payload: dict) -> None:
                                f"Resume with `/ultragoal resume`."})
         sys.exit(0)
 
-    if c["idle_blocks"] >= lim["idle_limit"]:
+    if lim["idle_limit"] > 0 and c["idle_blocks"] >= lim["idle_limit"]:
         idle = c["idle_blocks"]  # set_status clears the counter; report the real one
         b.set_status(STATUS_PAUSED,
                      f"auto-paused after {idle} continuations with no recorded progress")
@@ -941,7 +1015,7 @@ def hook_stop(payload: dict) -> None:
                                "Review the plan, then `/ultragoal resume`."})
         sys.exit(0)
 
-    if c["stop_blocks"] > lim["max_continues"]:
+    if lim["max_continues"] > 0 and c["stop_blocks"] > lim["max_continues"]:
         b.set_status(STATUS_PAUSED,
                      f"auto-paused at the {lim['max_continues']}-continuation budget")
         b.save()
@@ -1230,6 +1304,32 @@ def cmd_selftest(args):
         check("guard asks before skipping a test",
               dec.get("permissionDecision") == "ask", r.stdout[:200])
 
+        print("-- full autonomy")
+        run(["new", "--slug", "auto", "--objective", "z", "--autonomy", "full"])
+        run(["accept", "w", "--slug", "auto"])
+        run(["verifier", "v", "--slug", "auto"])
+        run(["activate", "--slug", "auto", "--no-hooks"])
+        s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "auto" / "state.json").read_text())
+        check("full autonomy sets guard off and unbounded limits",
+              s["guard"] is False and s["limits"]["max_continues"] == 0
+              and s["limits"]["idle_limit"] == 0, str(s["limits"]))
+        for i in range(DEFAULT_IDLE_LIMIT + 3):
+            r = run(["hook", "stop"], stdin=json.dumps({"prompt_id": f"auto{i}"}))
+        s = json.loads((Path(env["ULTRAGOAL_DIR"]) / "auto" / "state.json").read_text())
+        check("gate never auto-pauses under full autonomy",
+              s["status"] == STATUS_ACTIVE, s["status"])
+        dec = json.loads(r.stdout or "{}").get("hookSpecificOutput", {})
+        check("full-autonomy gate keeps blocking", dec.get("decision") == "block",
+              r.stdout[:200])
+        check("full-autonomy reason directs deciding, not asking",
+              "FULL AUTONOMY" in r.stdout and "decide" in r.stdout, r.stdout[:200])
+        r = run(["decide", "--slug", "auto", "prefer sqlite", "--why", "single writer"])
+        check("decide records an autonomous decision", r.returncode == 0, r.stderr)
+        r = run(["report", "--slug", "auto"])
+        check("report lists decisions for post-run review",
+              "Autonomous decisions to review (1)" in r.stdout, r.stdout[:300])
+        run(["pause", "--slug", "auto"])
+
         print("-- resilience")
         (Path(env["ULTRAGOAL_DIR"]) / "demo" / "state.json").write_text("{not json")
         r = run(["hook", "stop"], stdin=json.dumps({"prompt_id": "z"}))
@@ -1273,6 +1373,9 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["compact", "focused", "full"])
     n.add_argument("--max-continues", type=int, default=DEFAULT_MAX_CONTINUES)
     n.add_argument("--deadline-minutes", type=int, default=0)
+    n.add_argument("--autonomy", default="standard", choices=["standard", "full"],
+                   help="full: unbounded continuations, no idle pause, guard off — "
+                        "runs until complete or blocked")
     n.add_argument("--force", action="store_true")
     n.set_defaults(func=cmd_new)
 
@@ -1334,6 +1437,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--ref", help="path, URL, or command")
     e.set_defaults(func=cmd_evidence)
 
+    dc = sub_parser("decide", help="record an autonomous decision and keep moving")
+    dc.add_argument("text")
+    dc.add_argument("--why", default="")
+    dc.add_argument("--irreversible", action="store_true",
+                    help="flag for prominent post-run review")
+    dc.set_defaults(func=cmd_decide)
+
     at = sub_parser("attempt", help="record a failed attempt in the ledger")
     at.add_argument("--failure", required=True,
                     help="mechanical | hypothesis | specification | approval | external")
@@ -1392,6 +1502,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(func=cmd_report)
 
     cf = sub_parser("config")
+    cf.add_argument("--autonomy", choices=["standard", "full"])
     cf.add_argument("--guard", choices=["on", "off"])
     cf.add_argument("--max-continues", type=int)
     cf.add_argument("--idle-limit", type=int)
