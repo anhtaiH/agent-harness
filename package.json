@@ -18,13 +18,10 @@
     "runtime/schemas/*.json",
     "runtime/skills/*/SKILL.md",
     "runtime/templates/*.md",
+    "runtime/toolchain-overrides/*.txt",
     "runtime/toolchain-manifest.v1.json",
     "src/*.py",
     "src/harness_core/*.py",
-    "tests/**/*.py",
-    "tests/**/*.sh",
-    "tests/**/*.mjs",
-    "tests/**/*.json",
     "package-lock.json",
     "npm-shrinkwrap.json",
     "README.md",
@@ -35,9 +32,6 @@
     "ah": "bin/agent-harness"
   },
   "scripts": {
-    "test": "./tests/run.sh",
-    "preflight": "./tests/preflight.sh",
-    "benchmark:mcp": "node ./tests/mcp_profile_benchmark.mjs",
     "self-check": "./bin/agent-harness self-check"
   },
   "dependencies": {

@@ -43,6 +43,7 @@ DEFAULT_WORKSPACE = os.environ.get("AGENT_HARNESS_WORKSPACE", "default")
 DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
 PACKAGE_VERSION = "0.3.0"
 RELEASE_REF = "v0.3.0"
+PLAYWRIGHT_PACKAGE = "@playwright/mcp@0.0.79"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
@@ -365,6 +366,14 @@ def copy_source_bundle(root: Path, source_root: Path, *, force: bool = False) ->
     return bundle
 
 
+def package_client_env(**values: str) -> dict[str, str]:
+    allowed = {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
+    return {
+        **{key: value for key, value in os.environ.items() if key in allowed},
+        **values,
+    }
+
+
 def npm_ci_for_bundle(bundle: Path, *, skip: bool = False) -> dict[str, Any]:
     if skip:
         return {"ok": True, "skipped": True, "reason": "skipped by flag"}
@@ -372,9 +381,7 @@ def npm_ci_for_bundle(bundle: Path, *, skip: bool = False) -> dict[str, Any]:
         return {"ok": False, "skipped": True, "reason": "npm not found"}
     if not (bundle / "package-lock.json").exists() and not (bundle / "npm-shrinkwrap.json").exists():
         return {"ok": False, "skipped": True, "reason": "package-lock.json or npm-shrinkwrap.json missing"}
-    allowed = {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
-    env = {key: value for key, value in os.environ.items() if key in allowed}
-    env["npm_config_ignore_scripts"] = "true"
+    env = package_client_env(npm_config_ignore_scripts="true")
     result = run_text(["npm", "ci", "--omit=dev", "--ignore-scripts"], cwd=bundle, timeout=180, env=env)
     return {
         "ok": result.returncode == 0,
@@ -524,12 +531,12 @@ def install_tool_fallback(tool: dict[str, Any], *, dry_run: bool) -> dict[str, A
     kind = fallback.get("kind")
     details: dict[str, Any] = {}
     if kind == "pip-user":
-        command = [sys.executable, "-m", "pip", "install", "--user", fallback["package"]]
-        result = None if dry_run else run_text(command, timeout=900)
+        command = [sys.executable, "-m", "pip", "install", "--user", "--only-binary=:all:", fallback["package"]]
+        result = None if dry_run else run_text(command, timeout=900, env=package_client_env(PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK="1"))
     elif kind == "npm-prefix":
         npm = shutil.which("npm") or "npm"
-        command = [npm, "install", "--global", "--prefix", str(Path.home() / ".local"), fallback["package"]]
-        result = None if dry_run else run_text(command, timeout=900)
+        command = [npm, "install", "--ignore-scripts", "--global", "--prefix", str(Path.home() / ".local"), fallback["package"]]
+        result = None if dry_run else run_text(command, timeout=900, env=package_client_env(npm_config_ignore_scripts="true"))
     elif kind in {"archive", "binary"}:
         system = "darwin" if sys.platform == "darwin" else "linux"
         machine = platform.machine().lower()
@@ -604,11 +611,32 @@ def install_toolchain(root: Path, source_root: Path, profile: str = "full", *, d
     for tool in manifest["uv_tools"]:
         if uv_before[tool["id"]]["available"]:
             continue
-        command = [uv or "uv", "tool", "install", tool["package"]]
+        command = [
+            uv or "uv",
+            "tool",
+            "install",
+            "--no-python-downloads",
+            "--no-config",
+            "--exclude-newer",
+            tool["exclude_newer"],
+        ]
+        if not tool.get("verified_source_build"):
+            command.append("--no-build")
+        if tool.get("overrides"):
+            command.extend(["--overrides", str(source_root / tool["overrides"])])
+        command.append(tool["package"])
         if dry_run:
             actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": None})
         elif uv:
-            result = run_text(command, timeout=900)
+            result = run_text(
+                command,
+                timeout=900,
+                env=package_client_env(
+                    UV_NO_CONFIG="1",
+                    UV_NO_PROGRESS="1",
+                    UV_PYTHON_DOWNLOADS="never",
+                ),
+            )
             actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": result.returncode, "stderr": result.stderr[-1000:]})
         else:
             actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": 127, "stderr": "uv unavailable"})
@@ -1014,7 +1042,7 @@ def instruction_body(root: Path, workspace: str) -> str:
         - Policy gates run locally: secret-file access, remote-code piping, prod-affecting actions, and un-intended connector writes are blocked; destructive commands ask first outside yolo mode.
         - For PR reviews, use the draft-only PR review flow; do not post comments unless the user explicitly asks and a matching write intent exists.
         - Full instructions: `{root / 'instructions' / 'agent-harness.md'}`. Runtime: `{root}`
-        - Semble, Serena, Headroom, and credential-free Context7 are configured as general MCPs when the full toolchain is installed. Playwright stays lazy; use `npx --yes @playwright/mcp@latest` only for browser work.
+        - Semble, Serena, Headroom, and credential-free Context7 are configured as general MCPs when the full toolchain is installed. Playwright stays lazy; use the pinned `{PLAYWRIGHT_PACKAGE}` only for browser work.
         """
     ).strip()
 

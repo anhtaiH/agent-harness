@@ -65,7 +65,7 @@ def package_path_allowed(path: PurePosixPath) -> bool:
     if "__pycache__" in relative.parts or relative.suffix in {".pyc", ".pyo"}:
         return False
     roots = {"bin", "runtime", "src", "tests"}
-    suffixes = {"", ".json", ".md", ".mjs", ".py", ".sh", ".swift", ".ts"}
+    suffixes = {"", ".json", ".md", ".mjs", ".py", ".sh", ".swift", ".ts", ".txt"}
     return str(relative) in exact or (
         relative.parts and relative.parts[0] in roots and relative.suffix in suffixes
     )

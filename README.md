@@ -114,6 +114,8 @@ Hard stops in every mode: credential/secret reads, token exfiltration, remote-co
 
 External org writes use task-scoped, TTL-bound write intents with connector-native auth — the harness never asks for raw token env vars.
 
+Toolchain package clients run with a minimal credential-free environment. npm lifecycle scripts and automatic Python downloads are disabled; Python tools are exact-version/time-bounded, wheel-only except Serena's one source-only dependency, which is pinned by URL and SHA-256. Direct binary fallbacks are checksum-verified before installation.
+
 ## Learn more
 
 - [Getting Started](docs/getting-started.md)
@@ -134,12 +136,12 @@ Local verification is the release gate; CI (when available) is best-effort dupli
 
 ```bash
 npm ci
-npm test                      # setup, task/evidence flows, adapters, gates, orchestration, restore
-npm run benchmark:mcp         # prove compact MCP schema bytes are >=60% below legacy
-npm run preflight             # the full local gate: syntax checks, verify-gates,
+./tests/run.sh                # setup, task/evidence flows, adapters, gates, orchestration, restore
+node tests/mcp_profile_benchmark.mjs # prove compact MCP schema bytes are >=60% below legacy
+./tests/preflight.sh          # the full local gate: syntax checks, verify-gates,
                               # the suite from a fresh clone of HEAD, and a second
                               # suite run under a simulated macOS TMPDIR
 ./bin/agent-harness verify-gates
 ```
 
-The test suite exercises no-clone setup, runtime self-containment, profile generation, task/evidence flows, PR-review smoke paths, write intents, gate verification, adapter installs (Claude settings hooks, Cursor hooks, opencode, pi), orchestration (dynamic plans, fix loops, bounded blocking), and uninstall/restore. Run `npm run preflight` before merging anything.
+The test suite exercises no-clone setup, runtime self-containment, profile generation, task/evidence flows, PR-review smoke paths, write intents, gate verification, adapter installs (Claude settings hooks, Cursor hooks, opencode, pi), orchestration (dynamic plans, fix loops, bounded blocking), and uninstall/restore. Run `./tests/preflight.sh` from a source checkout before merging anything. Source-only tests are intentionally excluded from the installed npm artifact.

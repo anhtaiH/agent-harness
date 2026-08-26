@@ -103,6 +103,17 @@ class AgentHarnessRegressionTests(unittest.TestCase):
             {action.get("tool") for action in result["actions"] if action["kind"] == "fallback"},
             {"ast-grep", "yq", "uv", "rtk"},
         )
+        uv_actions = [action for action in result["actions"] if action["kind"] == "uv"]
+        self.assertEqual({action["tool"] for action in uv_actions}, {"semble", "serena", "headroom"})
+        for action in uv_actions:
+            if action["tool"] == "serena":
+                self.assertNotIn("--no-build", action["command"])
+                self.assertIn("--overrides", action["command"])
+            else:
+                self.assertIn("--no-build", action["command"])
+            self.assertIn("--no-python-downloads", action["command"])
+            self.assertIn("--no-config", action["command"])
+            self.assertIn("--exclude-newer", action["command"])
 
     def test_linux_package_install_fails_before_mutation_without_privilege(self):
         unavailable = {"available": False, "executables": ["missing"]}
@@ -133,6 +144,39 @@ class AgentHarnessRegressionTests(unittest.TestCase):
             result = agent_harness.npm_ci_for_bundle(bundle)
         self.assertTrue(result["ok"])
         self.assertEqual(run.call_args.args[0], ["npm", "ci", "--omit=dev", "--ignore-scripts"])
+        self.assertNotIn("NPM_TOKEN", run.call_args.kwargs["env"])
+        self.assertEqual(run.call_args.kwargs["env"]["npm_config_ignore_scripts"], "true")
+
+    def test_package_client_environment_drops_registry_credentials(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.root),
+                "PATH": "/bin",
+                "NPM_TOKEN": "secret",
+                "UV_INDEX_URL": "https://credential@example.invalid/simple",
+                "PIP_INDEX_URL": "https://credential@example.invalid/simple",
+            },
+            clear=True,
+        ):
+            env = agent_harness.package_client_env(UV_NO_CONFIG="1")
+        self.assertEqual(env, {"HOME": str(self.root), "PATH": "/bin", "UV_NO_CONFIG": "1"})
+
+    def test_package_fallback_disables_npm_scripts_and_scrubs_environment(self):
+        tool = next(
+            item
+            for item in agent_harness.load_toolchain_manifest(PROJECT_ROOT)["system_tools"]
+            if item["id"] == "ast-grep"
+        )
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch.dict(os.environ, {"HOME": str(self.root), "PATH": "/bin", "NPM_TOKEN": "secret"}, clear=True),
+            patch.object(agent_harness.shutil, "which", return_value="/bin/npm"),
+            patch.object(agent_harness, "run_text", return_value=completed) as run,
+        ):
+            result = agent_harness.install_tool_fallback(tool, dry_run=False)
+        self.assertEqual(result["returncode"], 0)
+        self.assertIn("--ignore-scripts", run.call_args.args[0])
         self.assertNotIn("NPM_TOKEN", run.call_args.kwargs["env"])
         self.assertEqual(run.call_args.kwargs["env"]["npm_config_ignore_scripts"], "true")
 

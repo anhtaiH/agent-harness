@@ -54,7 +54,7 @@ git clone --quiet --local --no-hardlinks "$ROOT" "$CLONE"
 echo "clone at $CLONE ($(git -C "$CLONE" rev-parse --short HEAD))"
 
 step "4/5 full suite from the fresh clone"
-(cd "$CLONE" && npm ci --silent --ignore-scripts >/dev/null && npm test >"$WORK/suite.log" 2>&1) || {
+(cd "$CLONE" && npm ci --silent --ignore-scripts >/dev/null && ./tests/run.sh >"$WORK/suite.log" 2>&1) || {
   tail -30 "$WORK/suite.log" >&2
   exit 1
 }
@@ -66,7 +66,7 @@ else
   step "5/5 full suite under simulated macOS TMPDIR (symlinked base + trailing slash)"
   mkdir -p "$WORK/private/realtmp"
   ln -s "$WORK/private/realtmp" "$WORK/tmplink"
-  (cd "$CLONE" && TMPDIR="$WORK/tmplink/" npm test >"$WORK/suite-macsim.log" 2>&1) || {
+  (cd "$CLONE" && TMPDIR="$WORK/tmplink/" ./tests/run.sh >"$WORK/suite-macsim.log" 2>&1) || {
     tail -30 "$WORK/suite-macsim.log" >&2
     exit 1
   }
