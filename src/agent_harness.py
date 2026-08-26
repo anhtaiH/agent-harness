@@ -10,6 +10,7 @@ memory inboxes, and local metrics.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import contextlib
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,7 @@ DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
 PACKAGE_VERSION = "0.3.0"
 RELEASE_REF = "v0.3.0"
 PLAYWRIGHT_PACKAGE = "@playwright/mcp@0.0.79"
+PLAYWRIGHT_INTEGRITY = "sha512-VpqD4a3vFyGQMY9sh3UJiO6wjcurggkljKfAyCHL0QWGY5m6Ehr3MNsAAHPDHO//n13g0PCjpHatAOiulrqdZQ=="
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
@@ -374,6 +376,52 @@ def package_client_env(**values: str) -> dict[str, str]:
     }
 
 
+def npm_client_env(**values: str) -> dict[str, str]:
+    config = {
+        "npm_config_cache": str(Path.home() / ".cache" / "agent-harness" / "npm"),
+        "npm_config_globalconfig": str(Path.home() / ".cache" / "agent-harness" / "empty-global.npmrc"),
+        "npm_config_ignore_scripts": "true",
+        "npm_config_registry": "https://registry.npmjs.org/",
+        "npm_config_userconfig": os.devnull,
+    }
+    config.update(values)
+    return package_client_env(**config)
+
+
+def verify_sri(path: Path, expected: str) -> bool:
+    algorithm, separator, encoded = expected.partition("-")
+    if separator != "-" or algorithm != "sha512" or not encoded:
+        return False
+    actual = base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
+    return actual == encoded
+
+
+def playwright(args: argparse.Namespace) -> int:
+    npm = shutil.which("npm")
+    if not npm:
+        raise HarnessError("Playwright requires npm on PATH")
+    with tempfile.TemporaryDirectory(prefix="agent-harness-playwright-") as temp:
+        root = Path(temp)
+        env = npm_client_env(npm_config_cache=str(root / "npm-cache"))
+        packed = run_text(
+            [npm, "pack", PLAYWRIGHT_PACKAGE, "--pack-destination", str(root), "--json"],
+            timeout=300,
+            env=env,
+        )
+        if packed.returncode != 0:
+            raise HarnessError(f"Unable to fetch pinned Playwright MCP: {packed.stderr.strip()}")
+        try:
+            record = json.loads(packed.stdout)[0]
+            tarball = root / record["filename"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise HarnessError("npm returned an invalid Playwright package receipt") from exc
+        if not tarball.is_file() or not verify_sri(tarball, PLAYWRIGHT_INTEGRITY):
+            raise HarnessError("Pinned Playwright MCP integrity verification failed")
+        forwarded = args.playwright_args[1:] if args.playwright_args[:1] == ["--"] else args.playwright_args
+        command = [npm, "exec", "--yes", "--package", str(tarball), "--", "playwright-mcp", *forwarded]
+        return subprocess.run(command, env=env, check=False).returncode
+
+
 def npm_ci_for_bundle(bundle: Path, *, skip: bool = False) -> dict[str, Any]:
     if skip:
         return {"ok": True, "skipped": True, "reason": "skipped by flag"}
@@ -381,7 +429,7 @@ def npm_ci_for_bundle(bundle: Path, *, skip: bool = False) -> dict[str, Any]:
         return {"ok": False, "skipped": True, "reason": "npm not found"}
     if not (bundle / "package-lock.json").exists() and not (bundle / "npm-shrinkwrap.json").exists():
         return {"ok": False, "skipped": True, "reason": "package-lock.json or npm-shrinkwrap.json missing"}
-    env = package_client_env(npm_config_ignore_scripts="true")
+    env = npm_client_env()
     result = run_text(["npm", "ci", "--omit=dev", "--ignore-scripts"], cwd=bundle, timeout=180, env=env)
     return {
         "ok": result.returncode == 0,
@@ -536,7 +584,7 @@ def install_tool_fallback(tool: dict[str, Any], *, dry_run: bool) -> dict[str, A
     elif kind == "npm-prefix":
         npm = shutil.which("npm") or "npm"
         command = [npm, "install", "--ignore-scripts", "--global", "--prefix", str(Path.home() / ".local"), fallback["package"]]
-        result = None if dry_run else run_text(command, timeout=900, env=package_client_env(npm_config_ignore_scripts="true"))
+        result = None if dry_run else run_text(command, timeout=900, env=npm_client_env())
     elif kind in {"archive", "binary"}:
         system = "darwin" if sys.platform == "darwin" else "linux"
         machine = platform.machine().lower()
@@ -1042,7 +1090,7 @@ def instruction_body(root: Path, workspace: str) -> str:
         - Policy gates run locally: secret-file access, remote-code piping, prod-affecting actions, and un-intended connector writes are blocked; destructive commands ask first outside yolo mode.
         - For PR reviews, use the draft-only PR review flow; do not post comments unless the user explicitly asks and a matching write intent exists.
         - Full instructions: `{root / 'instructions' / 'agent-harness.md'}`. Runtime: `{root}`
-        - Semble, Serena, Headroom, and credential-free Context7 are configured as general MCPs when the full toolchain is installed. Playwright stays lazy; use the pinned `{PLAYWRIGHT_PACKAGE}` only for browser work.
+        - Semble, Serena, Headroom, and credential-free Context7 are configured as general MCPs when the full toolchain is installed. Playwright stays lazy; run `agent-harness playwright -- <args>` only for browser work. The command verifies the pinned `{PLAYWRIGHT_PACKAGE}` artifact before execution.
         """
     ).strip()
 
@@ -4455,6 +4503,10 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade_p.add_argument("--toolchain", choices=["full", "none"], help="Override the installed toolchain profile")
     upgrade_p.add_argument("--json", action="store_true")
     upgrade_p.set_defaults(func=upgrade)
+
+    playwright_p = sub.add_parser("playwright", help="Run the pinned, integrity-verified Playwright MCP lazily")
+    playwright_p.add_argument("playwright_args", nargs=argparse.REMAINDER)
+    playwright_p.set_defaults(func=playwright)
 
     open_p = sub.add_parser("open", help="Print or open the local dashboard")
     open_p.add_argument("--runtime-root", default=argparse.SUPPRESS)

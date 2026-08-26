@@ -116,6 +116,8 @@ External org writes use task-scoped, TTL-bound write intents with connector-nati
 
 Toolchain package clients run with a minimal credential-free environment. npm lifecycle scripts and automatic Python downloads are disabled; Python tools are exact-version/time-bounded, wheel-only except Serena's one source-only dependency, which is pinned by URL and SHA-256. Direct binary fallbacks are checksum-verified before installation.
 
+Playwright is deliberately lazy: `agent-harness playwright -- <playwright-mcp args>` downloads the pinned package into a temporary cache, verifies its committed SHA-512, and executes only the verified local tarball.
+
 ## Learn more
 
 - [Getting Started](docs/getting-started.md)

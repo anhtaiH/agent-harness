@@ -146,6 +146,21 @@ class AgentHarnessRegressionTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["npm", "ci", "--omit=dev", "--ignore-scripts"])
         self.assertNotIn("NPM_TOKEN", run.call_args.kwargs["env"])
         self.assertEqual(run.call_args.kwargs["env"]["npm_config_ignore_scripts"], "true")
+        self.assertEqual(run.call_args.kwargs["env"]["npm_config_userconfig"], os.devnull)
+        self.assertTrue(run.call_args.kwargs["env"]["npm_config_globalconfig"].endswith("/empty-global.npmrc"))
+
+    def test_playwright_pin_and_integrity_are_enforced(self):
+        payload = self.root / "playwright.tgz"
+        payload.write_bytes(b"verified-playwright")
+        expected = "sha512-" + agent_harness.base64.b64encode(
+            hashlib.sha512(payload.read_bytes()).digest()
+        ).decode()
+        self.assertTrue(agent_harness.verify_sri(payload, expected))
+        self.assertFalse(agent_harness.verify_sri(payload, expected[:-1] + "A"))
+        manifest = agent_harness.load_toolchain_manifest(PROJECT_ROOT)
+        playwright = next(item for item in manifest["lazy_mcp"] if item["id"] == "playwright")
+        self.assertEqual(playwright["args"][-1], agent_harness.PLAYWRIGHT_PACKAGE)
+        self.assertEqual(playwright["integrity"], agent_harness.PLAYWRIGHT_INTEGRITY)
 
     def test_package_client_environment_drops_registry_credentials(self):
         with patch.dict(
