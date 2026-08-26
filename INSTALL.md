@@ -10,15 +10,15 @@ A local, per-user control plane under `~/.agent-harness/<workspace>/` that gives
 
 1. Confirm you are inside the target git repo: `git rev-parse --show-toplevel`. If not, ask the human which repo to install for.
 2. Confirm bootstrap requirements: `node --version` (>= 20), `npm --version`, `python3 --version` (>= 3.10), `git --version`.
-3. If `~/.agent-harness/` already contains a runtime for this workspace, prefer `agent-harness upgrade` over a fresh setup, or rerun setup (it is idempotent for managed state).
-4. Run `npx --yes github:anhtaiH/agent-harness setup --dry-run --json` and inspect the package-manager, pinned-package, and checksum-verified fallback actions. Do not replace these with remote-code piping.
+3. If `~/.agent-harness/` already contains a runtime for this workspace, use the versioned `upgrade` command below; the installed shim can replay its current version but cannot acquire a newer release itself.
+4. Run `env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --dry-run --json` and inspect the package-manager, pinned-package, and checksum-verified fallback actions. Do not replace these with remote-code piping.
 
 ## Install (deterministic)
 
 Run from the repo root:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup --yes --json
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --yes --json
 ```
 
 Notes:
@@ -68,4 +68,4 @@ agent-harness uninstall
 
 This removes the runtime, managed shims, managed instruction blocks, hook registrations, installed skills/subagents (only if unmodified), and MCP registrations, restoring prior user config. If anything reports `"restored": false`, show the human the listed path and reason.
 
-The default rollback retains CLI tools because they may now be shared by other projects. If the human explicitly wants tools removed too, use `agent-harness uninstall --remove-owned-tools`; it removes only tools recorded as installed by this Harness runtime.
+The default rollback retains CLI tools because they may now be shared by other projects. If the human explicitly wants tools removed too, use `agent-harness uninstall --remove-owned-tools`; it removes only receipt-owned, hash-matching local binaries and reports global/package-manager tools as retained rather than guessing ownership.

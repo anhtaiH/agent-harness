@@ -13,7 +13,7 @@ It is **not** an agent and not a service: it runs no models, hosts nothing, and 
 The install interface is a prompt. Paste this into whichever coding agent you trust with shell access:
 
 ```text
-Read https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Use the deterministic setup script it names, then run doctor --json and verify-gates --json, and report both results plus which app adapters were installed or skipped. Do not claim success unless doctor and verify-gates both return ok:true. Finish by telling me the rollback command.
+Read https://raw.githubusercontent.com/anhtaiH/agent-harness/v0.3.0/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Use the deterministic setup script it names, then run doctor --json and verify-gates --json, and report both results plus which app adapters were installed or skipped. Do not claim success unless doctor and verify-gates both return ok:true. Finish by telling me the rollback command.
 ```
 
 The agent is the interface; deterministic scripts do the work. [INSTALL.md](INSTALL.md) walks the agent through preflight, `setup --yes --json`, verification, a smoke task, and the rollback command.
@@ -21,9 +21,9 @@ The agent is the interface; deterministic scripts do the work. [INSTALL.md](INST
 ### Install (human, direct)
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup            # interactive
-npx --yes github:anhtaiH/agent-harness setup --yes      # unattended
-npx --yes github:anhtaiH/agent-harness setup --workspace my-product --yes
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup            # interactive
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --yes      # unattended
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --workspace my-product --yes
 ```
 
 Setup detects the current git repo and platform, creates a runtime under `~/.agent-harness/<workspace>/`, installs the credential-free engineering toolchain, copies a self-contained source bundle, creates shims, generates a repo profile, installs app adapters for the tools it finds, and runs `doctor`. Use `setup --dry-run --json` to inspect every package action, or `--toolchain none` to opt out.
@@ -71,7 +71,7 @@ A planner agent decomposes the packet into role steps (researcher → worker →
 | pi | `~/.pi/agent/APPEND_SYSTEM.md` block | — (pi is CLI-first by design) | `tool_call` extension bridge | repo `.agents/skills/` (git-excluded) | via `agent_run` peer lanes |
 | Gemini CLI / others | manual snippets under `<runtime>/state/adapter-snippets/` | snippet | shared CLI (`harness`) | — | — |
 
-Every adapter edit is marker-delimited or sha/metadata-tracked; `agent-harness uninstall` reverses all of it. Tools that setup installed are retained by default; `agent-harness uninstall --remove-owned-tools` removes only receipt-owned tools.
+Every adapter edit is marker-delimited or sha/metadata-tracked; `agent-harness uninstall` reverses all of it. Tools that setup installed are retained by default; `agent-harness uninstall --remove-owned-tools` removes only receipt-owned, hash-matching local binaries and conservatively retains global/package-manager installs.
 
 Harness MCP starts in the nine-tool `compact` lifecycle/orchestration profile. Set `AGENT_HARNESS_MCP_PROFILE=legacy` on the Harness server only when the full legacy surface is needed; the measured schema-size gate requires at least a 60% reduction.
 
@@ -99,7 +99,7 @@ agent-harness retro           # friction report: forced finishes, top gate denia
 agent-harness clean           # prune old finished tasks/backups under a retention policy (--dry-run first)
 agent-harness open            # dashboard
 agent-harness examples        # prompt ideas
-agent-harness upgrade         # refresh runtime + re-sync adapters from the package
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 upgrade # refresh from this immutable release
 agent-harness uninstall       # removes runtime and restores adapters by default (--keep-adapters to opt out)
 agent-harness uninstall --remove-owned-tools # also remove only receipt-owned toolchain installs
 ```

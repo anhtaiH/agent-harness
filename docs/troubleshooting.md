@@ -5,22 +5,24 @@
 Run setup from inside a git repo or pass a repo path:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup --repo /path/to/repo
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --repo /path/to/repo
 ```
 
 ## Dependency Install Fails
+
+On Linux, setup verifies non-interactive package-manager privilege before changing the system. If it reports that privilege is unavailable, run `sudo -v` interactively and retry, install the listed tools yourself, or use `--toolchain none`.
 
 Run:
 
 ```bash
 npm --version
-npx --yes github:anhtaiH/agent-harness setup --yes
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --yes
 ```
 
 For a CLI-only install while debugging npm:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup --yes --skip-deps
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --yes --skip-deps
 ```
 
 MCP features require Node dependencies, so use `--skip-deps` only as a temporary fallback.
@@ -56,7 +58,7 @@ Semble, Serena, Headroom, and unauthenticated Context7 are configured for suppor
 Setup skips existing non-harness files instead of overwriting them. Re-run with a different shim directory:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup --yes --shim-dir /path/to/bin
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup --yes --shim-dir /path/to/bin
 ```
 
 Use `--force` only when you are replacing a managed harness shim.

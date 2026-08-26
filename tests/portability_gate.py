@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import subprocess
 import tarfile
@@ -25,8 +26,10 @@ TEXT_LIMIT = 8 * 1024 * 1024
 
 
 def scan_bytes(label: str, content: bytes) -> list[str]:
-    if len(content) > TEXT_LIMIT or b"\0" in content:
-        return []
+    if len(content) > TEXT_LIMIT:
+        return [f"oversized package/source file is not scannable: {label}"]
+    if b"\0" in content:
+        return [f"binary file is not allowed: {label}"]
     text = content.decode("utf-8", errors="replace")
     failures = []
     for pattern in [*HOME_PATTERNS, *PREFIX_PATTERNS, *SECRET_PATTERNS]:
@@ -59,8 +62,13 @@ def package_path_allowed(path: PurePosixPath) -> bool:
         return False
     relative = PurePosixPath(*path.parts[1:])
     exact = {"package.json", "package-lock.json", "npm-shrinkwrap.json", "README.md", "INSTALL.md"}
+    if "__pycache__" in relative.parts or relative.suffix in {".pyc", ".pyo"}:
+        return False
     roots = {"bin", "runtime", "src", "tests"}
-    return str(relative) in exact or (relative.parts and relative.parts[0] in roots)
+    suffixes = {"", ".json", ".md", ".mjs", ".py", ".sh", ".swift", ".ts"}
+    return str(relative) in exact or (
+        relative.parts and relative.parts[0] in roots and relative.suffix in suffixes
+    )
 
 
 def scan_package(package: Path) -> list[str]:
@@ -91,9 +99,18 @@ def negative_self_test() -> list[str]:
         injected = root / "injected.txt"
         injected.write_text("/" + "Users" + "/machine-owner/private\n")
         subprocess.run(["git", "-C", str(root), "add", "injected.txt"], check=True)
+        failures = []
         if not scan_tree(root):
-            return ["negative self-test failed to reject injected home path"]
-    return []
+            failures.append("negative self-test failed to reject injected home path")
+        package = root / "injected.tgz"
+        payload = b"\0" + ("/" + "Users" + "/machine-owner/private").encode()
+        info = tarfile.TarInfo("package/src/__pycache__/injected.pyc")
+        info.size = len(payload)
+        with tarfile.open(package, "w:gz") as archive:
+            archive.addfile(info, io.BytesIO(payload))
+        if not scan_package(package):
+            failures.append("negative self-test failed to reject packaged bytecode")
+        return failures
 
 
 def main() -> int:

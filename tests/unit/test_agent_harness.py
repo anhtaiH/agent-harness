@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -102,6 +103,84 @@ class AgentHarnessRegressionTests(unittest.TestCase):
             {action.get("tool") for action in result["actions"] if action["kind"] == "fallback"},
             {"ast-grep", "yq", "uv", "rtk"},
         )
+
+    def test_linux_package_install_fails_before_mutation_without_privilege(self):
+        unavailable = {"available": False, "executables": ["missing"]}
+        denied = subprocess.CompletedProcess([], 1, "", "password required")
+        with (
+            patch.object(agent_harness, "detect_package_manager", return_value="apt-get"),
+            patch.object(agent_harness, "probe_executables", return_value=unavailable),
+            patch.object(agent_harness.os, "geteuid", return_value=1000),
+            patch.object(agent_harness.shutil, "which", side_effect=lambda name: "/usr/bin/sudo" if name == "sudo" else None),
+            patch.object(agent_harness, "run_text", return_value=denied) as run,
+        ):
+            with self.assertRaisesRegex(agent_harness.HarnessError, "sudo -v"):
+                agent_harness.install_toolchain(
+                    self.root / "runtime", PROJECT_ROOT, "full"
+                )
+        run.assert_called_once_with(["sudo", "-n", "true"], timeout=15)
+
+    def test_npm_bundle_install_scrubs_credentials_and_disables_scripts(self):
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        (bundle / "package-lock.json").write_text("{}\n")
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch.dict(os.environ, {"HOME": str(self.root), "PATH": "/bin", "NPM_TOKEN": "not-forwarded"}, clear=True),
+            patch.object(agent_harness, "command_available", return_value=True),
+            patch.object(agent_harness, "run_text", return_value=completed) as run,
+        ):
+            result = agent_harness.npm_ci_for_bundle(bundle)
+        self.assertTrue(result["ok"])
+        self.assertEqual(run.call_args.args[0], ["npm", "ci", "--omit=dev", "--ignore-scripts"])
+        self.assertNotIn("NPM_TOKEN", run.call_args.kwargs["env"])
+        self.assertEqual(run.call_args.kwargs["env"]["npm_config_ignore_scripts"], "true")
+
+    def test_fallback_asset_selection_covers_supported_architectures(self):
+        tool = next(
+            item
+            for item in agent_harness.load_toolchain_manifest(PROJECT_ROOT)["system_tools"]
+            if item["id"] == "yq"
+        )
+        cases = {
+            ("darwin", "arm64"): "yq_darwin_arm64",
+            ("darwin", "x86_64"): "yq_darwin_amd64",
+            ("linux", "aarch64"): "yq_linux_arm64",
+            ("linux", "amd64"): "yq_linux_amd64",
+        }
+        for (system, machine), asset_name in cases.items():
+            with self.subTest(system=system, machine=machine), patch.object(
+                agent_harness.sys, "platform", system
+            ), patch.object(agent_harness.platform, "machine", return_value=machine):
+                result = agent_harness.install_tool_fallback(tool, dry_run=True)
+            self.assertEqual(result["returncode"], None)
+            self.assertTrue(result["command"][1].endswith(asset_name))
+
+    def test_owned_tool_removal_requires_exact_download_hash(self):
+        runtime = self.root / "runtime"
+        binary = self.root / "bin" / "yq"
+        binary.parent.mkdir()
+        binary.write_bytes(b"installed")
+        receipt_path = runtime / "state" / "adapters" / "toolchain-receipt.json"
+        receipt = {
+            "owned": ["yq", "git"],
+            "actions": [{
+                "kind": "fallback",
+                "tool": "yq",
+                "returncode": 0,
+                "path": str(binary),
+                "installed_sha256": hashlib.sha256(b"installed").hexdigest(),
+            }],
+        }
+        agent_harness.write_json(receipt_path, receipt)
+        binary.write_bytes(b"user-changed")
+
+        result = agent_harness.remove_owned_tools(runtime, PROJECT_ROOT)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(binary.exists())
+        self.assertEqual(result["removed"], [])
+        self.assertEqual([item["tool"] for item in result["retained"]], ["git"])
 
     def test_toolchain_mcp_specs_use_receipt_paths_and_no_credentials(self):
         runtime = self.root / "runtime"

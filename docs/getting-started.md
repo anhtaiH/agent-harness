@@ -5,13 +5,13 @@
 The recommended path: let your coding agent install it. Paste into Claude Code, Codex, Cursor, opencode, or pi (a session with shell access):
 
 ```text
-Read https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Report doctor --json and verify-gates --json results when done.
+Read https://raw.githubusercontent.com/anhtaiH/agent-harness/v0.3.0/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Report doctor --json and verify-gates --json results when done.
 ```
 
 Or run it yourself from the repo you want agents to work on:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup
 ```
 
 Use `--yes` for unattended setup. Use `--workspace <name>` when one machine has multiple projects.
@@ -56,7 +56,7 @@ agent-harness open
 ## 4. Upgrade Or Remove
 
 ```bash
-agent-harness upgrade
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 upgrade
 agent-harness uninstall
 agent-harness uninstall --remove-owned-tools # explicit receipt-owned tool removal
 ```

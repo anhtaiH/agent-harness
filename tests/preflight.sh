@@ -54,7 +54,7 @@ git clone --quiet --local --no-hardlinks "$ROOT" "$CLONE"
 echo "clone at $CLONE ($(git -C "$CLONE" rev-parse --short HEAD))"
 
 step "4/5 full suite from the fresh clone"
-(cd "$CLONE" && npm ci --silent >/dev/null && npm test >"$WORK/suite.log" 2>&1) || {
+(cd "$CLONE" && npm ci --silent --ignore-scripts >/dev/null && npm test >"$WORK/suite.log" 2>&1) || {
   tail -30 "$WORK/suite.log" >&2
   exit 1
 }

@@ -42,6 +42,7 @@ RUNTIME_SOURCE = SOURCE_ROOT / "runtime"
 DEFAULT_WORKSPACE = os.environ.get("AGENT_HARNESS_WORKSPACE", "default")
 DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
 PACKAGE_VERSION = "0.3.0"
+RELEASE_REF = "v0.3.0"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
@@ -371,7 +372,10 @@ def npm_ci_for_bundle(bundle: Path, *, skip: bool = False) -> dict[str, Any]:
         return {"ok": False, "skipped": True, "reason": "npm not found"}
     if not (bundle / "package-lock.json").exists() and not (bundle / "npm-shrinkwrap.json").exists():
         return {"ok": False, "skipped": True, "reason": "package-lock.json or npm-shrinkwrap.json missing"}
-    result = run_text(["npm", "ci", "--omit=dev"], cwd=bundle, timeout=180)
+    allowed = {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
+    env = {key: value for key, value in os.environ.items() if key in allowed}
+    env["npm_config_ignore_scripts"] = "true"
+    result = run_text(["npm", "ci", "--omit=dev", "--ignore-scripts"], cwd=bundle, timeout=180, env=env)
     return {
         "ok": result.returncode == 0,
         "skipped": False,
@@ -493,6 +497,17 @@ def package_install_command(manager: str, packages: list[str]) -> list[str]:
     raise HarnessError(f"Unsupported package manager: {manager}")
 
 
+def require_package_install_privilege(manager: str) -> None:
+    if manager == "brew" or getattr(os, "geteuid", lambda: 1)() == 0:
+        return
+    if not shutil.which("sudo") or run_text(["sudo", "-n", "true"], timeout=15).returncode != 0:
+        raise HarnessError(
+            f"Installing packages with {manager} requires root privileges. "
+            "Run `sudo -v` interactively and retry, install the tools yourself, "
+            "or rerun setup with `--toolchain none`."
+        )
+
+
 def uv_bin_dir() -> list[Path]:
     local_uv = Path.home() / ".local" / "bin" / "uv"
     uv = shutil.which("uv") or (str(local_uv) if local_uv.is_file() and os.access(local_uv, os.X_OK) else None)
@@ -507,6 +522,7 @@ def install_tool_fallback(tool: dict[str, Any], *, dry_run: bool) -> dict[str, A
     fallback = tool.get("fallback", {})
     user_bin = Path.home() / ".local" / "bin"
     kind = fallback.get("kind")
+    details: dict[str, Any] = {}
     if kind == "pip-user":
         command = [sys.executable, "-m", "pip", "install", "--user", fallback["package"]]
         result = None if dry_run else run_text(command, timeout=900)
@@ -543,12 +559,13 @@ def install_tool_fallback(tool: dict[str, Any], *, dry_run: bool) -> dict[str, A
                 destination = user_bin / tool["executables"][0]
                 destination.write_bytes(executable)
                 destination.chmod(0o755)
+                details = {"path": str(destination.resolve()), "installed_sha256": hashlib.sha256(executable).hexdigest()}
                 result = subprocess.CompletedProcess(command, 0, "", "")
             except Exception as exc:
                 result = subprocess.CompletedProcess(command, 1, "", str(exc))
     else:
         return {"kind": "fallback", "tool": tool["id"], "command": [], "returncode": 2, "stderr": "no supported fallback"}
-    return {"kind": "fallback", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode, "stderr": "" if result is None else result.stderr[-1000:]}
+    return {"kind": "fallback", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode, "stderr": "" if result is None else result.stderr[-1000:], **details}
 
 
 def install_toolchain(root: Path, source_root: Path, profile: str = "full", *, dry_run: bool = False) -> dict[str, Any]:
@@ -569,6 +586,7 @@ def install_toolchain(root: Path, source_root: Path, profile: str = "full", *, d
         if dry_run:
             actions.append({"kind": "system", "command": command, "returncode": None})
         else:
+            require_package_install_privilege(str(manager))
             result = run_text(command, timeout=900)
             actions.append({"kind": "system", "command": command, "returncode": result.returncode, "stderr": result.stderr[-1000:]})
     user_dirs = [Path.home() / ".local" / "bin"]
@@ -641,77 +659,40 @@ def toolchain_status(root: Path, source_root: Path) -> dict[str, Any]:
     }
 
 
-def package_remove_command(manager: str, packages: list[str]) -> list[str]:
-    if manager == "brew":
-        return [manager, "uninstall", *packages]
-    prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
-    if manager in {"apt-get", "dnf"}:
-        return [*prefix, manager, "remove", "-y", *packages]
-    if manager == "pacman":
-        return [*prefix, manager, "-R", "--noconfirm", *packages]
-    if manager == "apk":
-        return [*prefix, manager, "del", *packages]
-    raise HarnessError(f"Unsupported package manager: {manager}")
-
-
 def remove_owned_tools(root: Path, source_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
     owned = set(receipt.get("owned", []))
     if not owned:
         return {"ok": True, "removed": [], "actions": [], "dry_run": dry_run}
     manifest = load_toolchain_manifest(source_root)
-    manager = receipt.get("manager")
     system = [tool for tool in manifest["system_tools"] if tool["id"] in owned]
-    packages = list(dict.fromkeys(
-        tool["packages"][manager]
-        for tool in system
-        if manager and tool.get("packages", {}).get(manager)
-    ))
     actions: list[dict[str, Any]] = []
-    if packages:
-        command = package_remove_command(str(manager), packages)
-        result = None if dry_run else run_text(command, timeout=900)
-        actions.append({"kind": "system", "command": command, "returncode": None if result is None else result.returncode})
-    fallback_owned = {
-        action.get("tool")
-        for action in receipt.get("actions", [])
-        if action.get("kind") == "fallback" and action.get("returncode") == 0
-    }
+    install_actions = {action.get("tool"): action for action in receipt.get("actions", []) if action.get("kind") == "fallback" and action.get("returncode") == 0}
+    retained: list[dict[str, str]] = []
     for tool in system:
-        if tool["id"] not in fallback_owned:
-            continue
+        install_action = install_actions.get(tool["id"], {})
         fallback = tool.get("fallback", {})
-        if fallback.get("kind") == "npm-prefix":
-            package = fallback["package"].rsplit("@", 1)[0]
-            command = [shutil.which("npm") or "npm", "uninstall", "--global", "--prefix", str(Path.home() / ".local"), package]
-            result = None if dry_run else run_text(command, timeout=900)
-        elif fallback.get("kind") == "pip-user":
-            package = fallback["package"].split("==", 1)[0]
-            command = [sys.executable, "-m", "pip", "uninstall", "-y", package]
-            result = None if dry_run else run_text(command, timeout=900)
-        elif fallback.get("kind") in {"archive", "binary"}:
-            path = Path.home() / ".local" / "bin" / tool["executables"][0]
+        if fallback.get("kind") in {"archive", "binary"} and install_action.get("path") and install_action.get("installed_sha256"):
+            path = Path(install_action["path"])
             command = ["remove-owned-file", str(path)]
             result = None
-            if not dry_run:
+            if not dry_run and path.is_file() and sha256(path) == install_action["installed_sha256"]:
                 try:
-                    path.unlink(missing_ok=True)
+                    path.unlink()
                     result = subprocess.CompletedProcess(command, 0, "", "")
                 except OSError as exc:
                     result = subprocess.CompletedProcess(command, 1, "", str(exc))
+            elif not dry_run:
+                result = subprocess.CompletedProcess(command, 1, "", "owned file missing or changed")
+            actions.append({"kind": "owned-file", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode})
         else:
-            continue
-        actions.append({"kind": "fallback", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode})
-    uv = shutil.which("uv")
+            retained.append({"tool": tool["id"], "reason": "global/package-manager installs are retained because absence-before-install is not sufficient removal proof"})
     for tool in manifest["uv_tools"]:
-        if tool["id"] not in owned:
-            continue
-        package = tool["package"].split("==", 1)[0]
-        command = [uv or "uv", "tool", "uninstall", package]
-        result = None if dry_run or not uv else run_text(command, timeout=300)
-        actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode})
+        if tool["id"] in owned:
+            retained.append({"tool": tool["id"], "reason": "shared uv tool retained because absence-before-install is not sufficient removal proof"})
     ok = dry_run or all(action["returncode"] == 0 for action in actions)
-    return {"ok": ok, "removed": sorted(owned), "actions": actions, "dry_run": dry_run}
+    removed = [action["tool"] for action in actions if dry_run or action["returncode"] == 0]
+    return {"ok": ok, "removed": removed, "retained": retained, "actions": actions, "dry_run": dry_run}
 
 
 def prompt_yes_no(message: str, default: bool = True) -> bool:
@@ -886,7 +867,7 @@ def setup(args: argparse.Namespace) -> int:
 
 
 def retry_setup_command(args: argparse.Namespace, repo: Path | None, workspace: str, root: Path) -> str:
-    parts = ["npx", "--yes", "github:anhtaiH/agent-harness", "setup", "--yes", "--workspace", workspace, "--runtime-root", str(root)]
+    parts = ["env", "npm_config_ignore_scripts=true", "npx", "--yes", f"github:anhtaiH/agent-harness#{RELEASE_REF}", "setup", "--yes", "--workspace", workspace, "--runtime-root", str(root)]
     if repo:
         parts.extend(["--repo", str(repo)])
     if args.skip_deps:
@@ -1926,7 +1907,7 @@ def doctor(args: argparse.Namespace) -> int:
             "failures": ["runtime is not installed or config.json is missing"],
             "warnings": [],
             "fix": "Run setup from inside a git repo.",
-            "retry": "npx --yes github:anhtaiH/agent-harness setup",
+            "retry": f"env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#{RELEASE_REF} setup",
         }
         if args.json:
             print_json(data)
@@ -1997,7 +1978,7 @@ def where_command(args: argparse.Namespace) -> int:
         print(f"Runtime: {data['runtime_root']}")
         if not installed:
             print("Status: not installed")
-            print("Setup: npx --yes github:anhtaiH/agent-harness setup")
+            print(f"Setup: env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#{RELEASE_REF} setup")
             return 0
         print("Status: installed")
         print(f"Workspace: {data['workspace']}")
@@ -2078,7 +2059,7 @@ def open_dashboard(args: argparse.Namespace) -> int:
 
 
 INSTALL_PROMPT = (
-    "Read https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md and follow it exactly to install the "
+    f"Read https://raw.githubusercontent.com/anhtaiH/agent-harness/{RELEASE_REF}/INSTALL.md and follow it exactly to install the "
     "Agent Harness for the repo we are in. Use the deterministic setup script it names, then run doctor --json and "
     "verify-gates --json, and report both results plus which app adapters were installed or skipped. Do not claim "
     "success unless doctor and verify-gates both return ok:true. Finish by telling me the rollback command."
@@ -2087,7 +2068,7 @@ INSTALL_PROMPT = (
 
 def install_prompt(args: argparse.Namespace) -> int:
     if args.json:
-        print_json({"prompt": INSTALL_PROMPT, "instructions_url": "https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md"})
+        print_json({"prompt": INSTALL_PROMPT, "instructions_url": f"https://raw.githubusercontent.com/anhtaiH/agent-harness/{RELEASE_REF}/INSTALL.md"})
     else:
         print(INSTALL_PROMPT)
     return 0
