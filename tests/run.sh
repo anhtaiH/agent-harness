@@ -62,8 +62,10 @@ if ! [[ "$PYTHON_MAJOR" =~ ^[0-9]+$ && "$PYTHON_MINOR" =~ ^[0-9]+$ ]] ||
    { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
   python_binding_error "AGENT_HARNESS_PYTHON requires Python 3.10 or newer"
 fi
-PYTHONPATH="$ROOT/src" run_bound_python -m unittest discover \
-  -s "$ROOT/tests/unit" -p 'test_*.py'
+if [ "${AGENT_HARNESS_SKIP_UNIT:-0}" != "1" ]; then
+  PYTHONPATH="$ROOT/src" run_bound_python -m unittest discover \
+    -s "$ROOT/tests/unit" -p 'test_*.py'
+fi
 
 TMP_BASE="${TMPDIR:-/tmp}"
 TMP_DIR="${TMP_BASE%/}/agent-harness-test-$$"
@@ -98,7 +100,7 @@ if "$ROOT/bin/agent-harness" --runtime-root "$TMP_DIR/not-installed" doctor --js
   echo "expected doctor to fail before setup" >&2
   exit 1
 fi
-npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --shim-dir "$TMP_DIR/bin" --yes --no-register --json >/dev/null
+npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --shim-dir "$TMP_DIR/bin" --yes --no-register --toolchain none --json >/dev/null
 test -x "$RUNTIME/source/agent-harness/bin/agent-harness"
 grep -q "source/agent-harness" "$RUNTIME/bin/harness"
 "$RUNTIME/bin/harness" doctor --json >/dev/null
@@ -141,6 +143,7 @@ fi
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" pr-review run pr-sample --lane auto --dry-run >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" pr-review synthesize pr-sample >/dev/null
 node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
+node "$ROOT/tests/mcp_profile_benchmark.mjs" >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" metrics export >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" eval run all --no-record >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" upgrade --dry-run --json >/dev/null
@@ -148,7 +151,9 @@ node "$RUNTIME/mcp/server.mjs" --self-test >/dev/null
 
 # Orchestration conductor: dynamic plan, gated dry-run to autonomous finish
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated demo task" --task-id orch-task --risk red --mode run --json >/dev/null
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate plan orch-task --dry-run --json | grep -q '"security-review"'
+orch_plan_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate plan orch-task --dry-run --json)"
+echo "$orch_plan_out" | grep -q '"security-review"'
+echo "$orch_plan_out" | grep -q '"model": "gpt-5.6-sol"'  # planner route is observable in dry-run output
 # With the finish knob, the deterministic path runs all the way to finish
 AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-task --dry-run --json | grep -q '"finished": true'
 test -f "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
@@ -156,7 +161,10 @@ grep -q "run-complete" "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate status orch-task | grep -q '"plan"'
 # A plain dry run is a rehearsal: it must NOT finish or write the real evidence.md
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Rehearsal task" --task-id orch-rehearse --risk green --mode run --json >/dev/null
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-rehearse --dry-run --json | grep -q '"finished": false'
+rehearse_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-rehearse --dry-run --json)"
+echo "$rehearse_out" | grep -q '"finished": false'
+echo "$rehearse_out" | grep -q '"model": "gpt-5.6-luna"'
+echo "$rehearse_out" | grep -q '"model": "gpt-5.6-terra"'
 if [ -f "$RUNTIME/tasks/orch-rehearse/evidence.md" ]; then
   echo "dry-run rehearsal must not write the real evidence.md" >&2
   exit 1
@@ -166,6 +174,14 @@ run_bound_python -c "import json,sys; m=json.load(open('$RUNTIME/tasks/orch-rehe
 # Fix loop recovers from a transient QA failure
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated fix-loop task" --task-id orch-fix --risk green --mode run --json >/dev/null
 AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 AGENT_HARNESS_ORCH_FAIL_STEPS=verify AGENT_HARNESS_ORCH_FAIL_ATTEMPTS=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-fix --dry-run --json | grep -q '"finished": true'
+run_bound_python -c "
+import json
+events = [json.loads(line) for line in open('$RUNTIME/tasks/orch-fix/orchestration/ledger.jsonl')]
+starts = [event for event in events if event.get('event') == 'step-started' and event.get('step') == 'implement']
+assert starts[0]['route']['model'] == 'gpt-5.6-luna'
+assert starts[1]['route']['model'] == 'gpt-5.6-sol'
+assert starts[1]['route']['reason'] == 'retry-escalation'
+"
 # Persistent reviewer rejection ends blocked, never finishes
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Orchestrated blocked task" --task-id orch-block --risk green --mode run --json >/dev/null
 if AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 AGENT_HARNESS_ORCH_FAIL_STEPS=review "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-block --dry-run --max-attempts 2 --json | grep -q '"finished": true'; then
@@ -248,7 +264,7 @@ echo "$fo_out" | grep -q '"decision": "block"'
 test -d "$RUNTIME/tasks/ah-strict"  # dry-run must not delete
 
 SKIP_RUNTIME="$TMP_DIR/runtime-skip-deps"
-npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --json >/dev/null
+npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo-skip --repo "$REPO" --runtime-root "$SKIP_RUNTIME" --shim-dir "$TMP_DIR/bin-skip" --yes --no-register --skip-deps --toolchain none --json >/dev/null
 "$TMP_DIR/bin-skip/agent-harness" where --json | grep -q '"installed": true'
 
 FAKE_HOME="$TMP_DIR/home"
@@ -263,7 +279,23 @@ printf '#!/usr/bin/env bash\ncase "$1" in --version) echo cursor-test ;; *) exit
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo opencode-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/opencode"
 printf '#!/usr/bin/env bash\ncase "$1" in --version) echo pi-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/pi"
 chmod +x "$FAKE_BIN/codex" "$FAKE_BIN/claude" "$FAKE_BIN/cursor-agent" "$FAKE_BIN/opencode" "$FAKE_BIN/pi"
-env CODEX_HOME="$POISON_CODEX_HOME" /usr/bin/env HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" setup --workspace demo-adapters --repo "$REPO" --runtime-root "$ADAPTER_RUNTIME" --shim-dir "$TMP_DIR/bin-adapters" --yes --json >/dev/null
+
+# Task-bound Codex exec lanes are ephemeral: the conductor owns evidence and finish.
+printf '#!/usr/bin/env bash\nprintf "%%s\\n%%s\\n%%s\\n%%s\\n" "${AGENT_HARNESS_TASK_ID-}" "${AGENT_HARNESS_REQUIRE_EVIDENCE-}" "${AGENT_HARNESS_SKIP_STOP_GATE-}" "$*" > "%s"\n' "$TMP_DIR/codex-wrapper-env" > "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/codex"
+PATH="$FAKE_BIN:$PATH" "$ROOT/runtime/bin/ah-codex" --task wrapper-probe exec --output-last-message "$TMP_DIR/final.md" prompt
+test "$(sed -n '1p' "$TMP_DIR/codex-wrapper-env")" = wrapper-probe
+test -z "$(sed -n '2p' "$TMP_DIR/codex-wrapper-env")"
+test "$(sed -n '3p' "$TMP_DIR/codex-wrapper-env")" = 1
+grep -q '^exec --output-last-message ' "$TMP_DIR/codex-wrapper-env"
+PATH="$FAKE_BIN:$PATH" "$ROOT/runtime/bin/ah-codex" --task wrapper-probe
+test "$(sed -n '2p' "$TMP_DIR/codex-wrapper-env")" = 1
+test -z "$(sed -n '3p' "$TMP_DIR/codex-wrapper-env")"
+
+# Restore the adapter-discovery fake after the wrapper probe.
+printf '#!/usr/bin/env bash\ncase "$1" in --version) echo codex-test ;; *) exit 0 ;; esac\n' > "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/codex"
+env CODEX_HOME="$POISON_CODEX_HOME" /usr/bin/env HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/agent-harness" setup --workspace demo-adapters --repo "$REPO" --runtime-root "$ADAPTER_RUNTIME" --shim-dir "$TMP_DIR/bin-adapters" --yes --toolchain none --json >/dev/null
 if find "$POISON_CODEX_HOME" -mindepth 1 ! -name sentinel -print -quit | grep -q .; then
   echo "adapter test escaped its fake Codex home" >&2
   exit 1
@@ -279,10 +311,14 @@ grep -q "stop-requires-evidence.py" "$FAKE_HOME/.claude/settings.json"
 grep -q 'Read(~/.ssh/\*\*)' "$FAKE_HOME/.claude/settings.json"
 test -f "$FAKE_HOME/.claude/skills/evidence-gate/SKILL.md"
 test -f "$FAKE_HOME/.claude/agents/agent-harness-reviewer.md"
-# Cursor hooks + CLI deny seeds
+# Cursor: one pre-tool bridge; CLI permissions remain user-owned
 grep -q "cursor-bridge.py" "$FAKE_HOME/.cursor/hooks.json"
-grep -q "beforeShellExecution" "$FAKE_HOME/.cursor/hooks.json"
-grep -q 'Read(\*\*/.env)' "$FAKE_HOME/.cursor/cli-config.json"
+grep -q '"preToolUse"' "$FAKE_HOME/.cursor/hooks.json"
+if grep -q '"beforeShellExecution"\|"beforeMCPExecution"' "$FAKE_HOME/.cursor/hooks.json"; then
+  echo "legacy duplicate Cursor hook events should be removed" >&2
+  exit 1
+fi
+test ! -e "$FAKE_HOME/.cursor/cli-config.json"
 # opencode: MCP entry, AGENTS.md block, plugin, skills
 grep -q "demo-adapters-agent-harness" "$FAKE_HOME/.config/opencode/opencode.json"
 grep -q "Agent Harness" "$FAKE_HOME/.config/opencode/AGENTS.md"
@@ -299,9 +335,8 @@ grep -q "Agent Harness" "$FAKE_HOME/.pi/agent/APPEND_SYSTEM.md"
 grep -q "tool_call" "$FAKE_HOME/.pi/agent/extensions/agent-harness.ts"
 test -f "$REPO/.agents/skills/task-packet/SKILL.md"
 grep -q "CLAUDE.local.md" "$REPO/.git/info/exclude"
-grep -q ".cursor/rules/agent-harness.mdc" "$REPO/.git/info/exclude"
 grep -q ".agents/skills/" "$REPO/.git/info/exclude"
-if git -C "$REPO" status --short | grep -E 'CLAUDE.local.md|\\.cursor/rules/agent-harness\\.mdc|\\.agents/'; then
+if git -C "$REPO" status --short | grep -E 'CLAUDE.local.md|\\.agents/'; then
   echo "local adapter files should be ignored" >&2
   exit 1
 fi
@@ -328,10 +363,7 @@ if grep -q "cursor-bridge.py" "$FAKE_HOME/.cursor/hooks.json"; then
   echo "Cursor hooks should be removed on restore" >&2
   exit 1
 fi
-if grep -q 'Read(\*\*/.env)' "$FAKE_HOME/.cursor/cli-config.json"; then
-  echo "Cursor CLI deny seeds should be removed on restore" >&2
-  exit 1
-fi
+test ! -e "$FAKE_HOME/.cursor/cli-config.json"
 if grep -q "demo-adapters-agent-harness" "$FAKE_HOME/.config/opencode/opencode.json"; then
   echo "opencode MCP entry should be removed on restore" >&2
   exit 1
@@ -344,7 +376,7 @@ if [ -e "$REPO/.agents/skills/task-packet/SKILL.md" ]; then
   echo "repo-local pi skills should be removed on restore" >&2
   exit 1
 fi
-if [ -e "$REPO/CLAUDE.local.md" ] || [ -e "$REPO/.cursor/rules/agent-harness.mdc" ]; then
+if [ -e "$REPO/CLAUDE.local.md" ]; then
   echo "repo-local adapter files should be removed on restore" >&2
   exit 1
 fi

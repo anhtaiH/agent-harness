@@ -8,7 +8,7 @@ The design is the local translation of three 2026 systems:
 
 - OpenAI's Symphony spec: a work ledger is the control plane; an orchestrator polls ready work, gives each agent an isolated workspace, restarts stalls, and hands finished work to human review.
 - Steve Yegge's Gas Town: named roles with narrow contracts (coordinator with the only global view, workers in isolated worktrees, a witness per rig, a merge-serializing refinery, a watchdog patrol) over the beads ledger.
-- GPT-5.6 Sol Ultra: dynamic decomposition — a planner decides the role fan-out per task instead of a fixed pipeline.
+- Sol-led dynamic decomposition: a strong planner decides the role fan-out, then bounded workers execute explicit packets. The harness owns fan-out, so role sessions use single-agent reasoning rather than nested Ultra orchestration.
 
 Mapping here: the conductor is the coordinator (deterministic, not an LLM); `plan.json` + `ledger.jsonl` are the work ledger; role agents are the fleet; the policy hooks and evidence doctor are the gates; you are the Overseer.
 
@@ -38,6 +38,20 @@ harness orchestrate status latest                            # ledger + step sta
 ```
 
 `orchestrate run` loops: pick ready steps → dispatch role agents (via the env-scrubbed ah-* wrappers, so every tool call passes the policy gates) → parse verdicts → advance. On a failed gate (QA FAIL, REQUEST-CHANGES, BLOCKING-FINDINGS) it bounces the responsible worker and everything downstream — a bounded fix loop with the failing findings injected into the worker's retry prompt. When all steps are done, the synthesizer's sections become `evidence.md`, the evidence doctor validates them, and the task finishes.
+
+## Codex role routing
+
+When the selected peer is Codex, the conductor resolves a model per bounded role instead of inheriting one global model for every process:
+
+| Situation | Route |
+| --- | --- |
+| planner | GPT-5.6 Sol, Max, Standard |
+| routine researcher, worker, QA, synthesizer | GPT-5.6 Luna, Max, Standard |
+| routine reviewer | GPT-5.6 Terra, High, Standard |
+| routine security review | GPT-5.6 Terra, Max, Standard |
+| red/high/critical task or any retry | GPT-5.6 Sol, Max, Standard |
+
+The route is passed directly to `codex exec`, recorded in plan/step metadata and `ledger.jsonl`, and shown by dry runs. It does not override the configured model provider, so custom providers continue to apply. Claude and Cursor commands are unchanged. Fast mode is never selected implicitly; use `--codex-fast` on `agent run`, `orchestrate plan`, or `orchestrate run` when lower latency is worth the higher credit rate. The same commands accept `--codex-model` and `--codex-effort` for an explicit bounded override.
 
 ## Deterministic verification (not agent self-report)
 

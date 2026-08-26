@@ -16,7 +16,7 @@ npx --yes github:anhtaiH/agent-harness setup
 
 Use `--yes` for unattended setup. Use `--workspace <name>` when one machine has multiple projects.
 
-Setup creates a local runtime, detects installed tools (Claude Code, Codex, Cursor, opencode, pi), wires policy gates into each tool's native hook system, installs skills/subagents where supported, registers MCP, installs shims, generates a local profile, and runs `doctor`.
+Setup creates a local runtime, installs the portable credential-free CLI/MCP toolchain, detects installed clients (Claude Code, Codex, Cursor, opencode, pi), wires policy gates into each tool's native hook system, installs skills/subagents where supported, registers compact MCP, installs shims, generates a local profile, and runs `doctor`. Preview with `setup --dry-run --json`; opt out of tool installation with `--toolchain none`.
 
 After a successful setup, open your agent in the repo and ask for work in natural language. You should not need to paste runtime paths into the agent.
 
@@ -57,7 +57,8 @@ agent-harness open
 
 ```bash
 agent-harness upgrade
-agent-harness uninstall --restore-adapters
+agent-harness uninstall
+agent-harness uninstall --remove-owned-tools # explicit receipt-owned tool removal
 ```
 
 Uninstall removes the local runtime, managed shims, and managed app-adapter blocks. It does not edit tracked project files.

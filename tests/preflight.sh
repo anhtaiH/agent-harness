@@ -43,6 +43,8 @@ cmp -s "$ROOT/package-lock.json" "$ROOT/npm-shrinkwrap.json" || {
 
 step "2/5 gate verification (source tree)"
 "$ROOT/bin/agent-harness" verify-gates --json | grep -q '"ok": true'
+"$AGENT_HARNESS_PYTHON" "$ROOT/tests/portability_gate.py" --tree "$ROOT" --self-test
+"$ROOT/tests/package_smoke.sh"
 echo "gates ok"
 
 step "3/5 fresh clone"

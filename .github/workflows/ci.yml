@@ -32,6 +32,8 @@ jobs:
         run: npm ci
       - name: Run test suite
         run: npm test
+      - name: Verify packed randomized-home lifecycle
+        run: ./tests/package_smoke.sh
       - name: Run preflight (fresh-clone gate)
         if: matrix.os == 'ubuntu-latest'
         run: npm run preflight -- --skip-macos-sim

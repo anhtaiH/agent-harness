@@ -4,13 +4,14 @@ These instructions are written for a coding agent (Claude Code, Codex, Cursor, o
 
 ## What you are installing
 
-A local, per-user control plane under `~/.agent-harness/<workspace>/` that gives coding agents shared task packets, an evidence gate, policy hooks (secret/exfiltration/production guards), draft-only PR review, and an MCP server. It does not modify tracked files in the repo (repo-local adapter files are added to `.git/info/exclude`), and every user-level config edit is marker-delimited or metadata-tracked so `uninstall --restore-adapters` can undo it.
+A local, per-user control plane under `~/.agent-harness/<workspace>/` that gives coding agents shared task packets, an evidence gate, policy hooks, draft-only PR review, a compact MCP server, and a portable credential-free engineering toolchain. It does not modify tracked files in the repo, and every user-level config edit is marker-delimited or metadata-tracked so `uninstall` can undo it.
 
 ## Preflight (read-only)
 
 1. Confirm you are inside the target git repo: `git rev-parse --show-toplevel`. If not, ask the human which repo to install for.
-2. Confirm requirements: `node --version` (>= 20), `npm --version`, `python3 --version` (>= 3.10), `git --version`.
+2. Confirm bootstrap requirements: `node --version` (>= 20), `npm --version`, `python3 --version` (>= 3.10), `git --version`.
 3. If `~/.agent-harness/` already contains a runtime for this workspace, prefer `agent-harness upgrade` over a fresh setup, or rerun setup (it is idempotent for managed state).
+4. Run `npx --yes github:anhtaiH/agent-harness setup --dry-run --json` and inspect the package-manager, pinned-package, and checksum-verified fallback actions. Do not replace these with remote-code piping.
 
 ## Install (deterministic)
 
@@ -22,6 +23,8 @@ npx --yes github:anhtaiH/agent-harness setup --yes --json
 
 Notes:
 - The `--json` result is your ground truth. Do not claim success unless `"ok": true`.
+- The default `--toolchain full` installs Git, ripgrep, ugrep, fd, ast-grep, jq, yq, GitHub CLI, uv, rtk, pinned Semble/Serena/Headroom, and credential-free Context7 configuration. Use `--toolchain none` only when the human explicitly wants to retain their own toolchain.
+- Playwright stays lazy to avoid permanent MCP context; activate `npx --yes @playwright/mcp@latest` only for browser work.
 - If dependency install fails, the JSON includes `fix` and `retry` fields; follow them (`--skip-deps` is a degraded CLI-only fallback — report it as such).
 - Setup auto-detects installed tools (Claude Code, Codex, Cursor, opencode, pi) and only writes adapters for the ones present. It never overwrites unmanaged user config; conflicts are reported as `skipped` with a reason and a manual snippet under `<runtime>/state/adapter-snippets/`.
 
@@ -40,7 +43,7 @@ If the shims are not on PATH yet, use the absolute runtime backend printed by se
 Success criteria you must confirm before reporting done:
 1. `doctor` returns `"ok": true` **and** `"warnings": []`. A warning like "MCP self-test skipped" or "node unavailable" means the install is degraded (CLI-only) — report that honestly, do not claim a full install.
 2. `verify-gates` returns `"ok": true` with every case passed — this proves the guardrails actually fire (secret reads denied, `curl | sh` denied, force-push to main denied, stop-without-evidence blocked, benign commands allowed).
-3. `where` lists the adapters that were installed for the tools present on this machine.
+3. `where` lists the adapters and toolchain receipt, with no missing full-profile tools.
 
 ## Smoke test (recommended)
 
@@ -60,7 +63,9 @@ Summarize: workspace name, runtime path, which tool adapters were installed/skip
 ## Rollback
 
 ```bash
-agent-harness uninstall --restore-adapters
+agent-harness uninstall
 ```
 
 This removes the runtime, managed shims, managed instruction blocks, hook registrations, installed skills/subagents (only if unmodified), and MCP registrations, restoring prior user config. If anything reports `"restored": false`, show the human the listed path and reason.
+
+The default rollback retains CLI tools because they may now be shared by other projects. If the human explicitly wants tools removed too, use `agent-harness uninstall --remove-owned-tools`; it removes only tools recorded as installed by this Harness runtime.

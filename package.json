@@ -1,9 +1,19 @@
 {
   "name": "agent-harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Opt-in local harness for agentic engineering workflows.",
+  "files": [
+    "bin/",
+    "runtime/",
+    "src/",
+    "tests/preflight.sh",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "README.md",
+    "INSTALL.md"
+  ],
   "bin": {
     "agent-harness": "bin/agent-harness",
     "ah": "bin/agent-harness"
@@ -11,10 +21,15 @@
   "scripts": {
     "test": "./tests/run.sh",
     "preflight": "./tests/preflight.sh",
+    "benchmark:mcp": "node ./tests/mcp_profile_benchmark.mjs",
     "self-check": "./bin/agent-harness self-check"
   },
   "dependencies": {
     "fastmcp": "^4.12.1",
     "zod": "^4.1.13"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5",
+    "hono": "4.12.34"
   }
 }

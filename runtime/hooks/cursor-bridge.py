@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cursor hooks bridge: translate Cursor hook payloads to the shared policy engine.
 
-Wired into ~/.cursor/hooks.json for beforeShellExecution and beforeMCPExecution.
+Wired into ~/.cursor/hooks.json for preToolUse.
 Cursor sends JSON on stdin and expects {"permission": "allow"|"deny"|"ask"}
 (optionally with userMessage/agentMessage) on stdout.
 

@@ -23,29 +23,35 @@ import html
 import io
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import time
-from pathlib import Path
+import urllib.request
+from pathlib import Path, PurePath
 from typing import Any, Callable
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_SOURCE = SOURCE_ROOT / "runtime"
 DEFAULT_WORKSPACE = os.environ.get("AGENT_HARNESS_WORKSPACE", "default")
 DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
-PACKAGE_VERSION = "0.2.0"
+PACKAGE_VERSION = "0.3.0"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
+CODEX_ROUTE_MODELS = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+CODEX_ROUTE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+CODEX_HIGH_RISK = {"red", "high", "critical"}
 MODES = {"plan", "run", "yolo"}
 WRITE_PROVIDERS = {"confluence", "jira", "slack", "github"}
 WRITE_OPERATIONS = {"create", "update", "comment", "review-comment", "send", "schedule", "transition", "maintenance"}
-MCP_TOOLS = [
+MCP_LEGACY_TOOLS = [
     "start_task",
     "resume_task",
     "status",
@@ -78,6 +84,17 @@ MCP_TOOLS = [
     "orchestrate_run",
     "orchestrate_status",
 ]
+MCP_TOOLS = [
+    "start_task",
+    "resume_task",
+    "read_artifact",
+    "write_evidence",
+    "run_check",
+    "evidence_doctor",
+    "finish_task",
+    "orchestrate_plan",
+    "orchestrate_run",
+]
 RUNTIME_DIRS = [
     "agents",
     "bin",
@@ -103,6 +120,7 @@ RUNTIME_DIRS = [
 SOURCE_EXCLUDES = {".git", "__pycache__", "node_modules", "dist", "build", ".agent-harness-runtime", "tmp"}
 SOURCE_EXCLUDE_SUFFIXES = {".pyc", ".tgz"}
 SOURCE_BUNDLE_REL = Path("source") / "agent-harness"
+TOOLCHAIN_MANIFEST_REL = Path("runtime") / "toolchain-manifest.v1.json"
 PRIMARY_TOOLS = ["node", "npm", "python3"]
 OPTIONAL_TOOLS = ["git", "gh", "codex", "claude", "cursor-agent", "agent"]
 LEAK_PATTERN_FILE = Path("policy") / "leak-patterns.json"
@@ -121,7 +139,7 @@ DEFAULT_REDACTION_PATTERNS = [
     r"-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----",
     r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",
     r"(?:mongodb(?:\+srv)?|postgres|postgresql|mysql|redis|rediss)://[^:@/\s]+:[^@/\s]{8,}@[^/\s]+",
-    r"authorization\s*[:=]\s*(?:bearer\s+)?[\"']?(?!<redacted>|\$)[0-9A-Za-z._~+/=\-]{24,}",
+    r"authorization\s*[:=]\s*(?:bearer\s+)?[\"']?(?!<redacted>|\$|session\.controllerAuthorization\b)[0-9A-Za-z._~+/=\-]{24,}",
     r"(api[_-]?key|token|secret|password)\s*[:=]\s*[\"']?[0-9A-Za-z._=+\-/]{24,}",
 ]
 
@@ -136,6 +154,15 @@ def utc_now() -> str:
 
 def expand(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def task_execution_cwd(manifest: dict[str, Any], fallback: str | Path | None = None) -> Path:
+    worktree = manifest.get("worktree")
+    if worktree:
+        resolved = expand(str(worktree))
+        if resolved.is_dir():
+            return resolved
+    return expand(str(manifest.get("repo_path") or fallback or Path.cwd()))
 
 
 def runtime_root(args: argparse.Namespace | None = None) -> Path:
@@ -308,10 +335,26 @@ def source_ignore(_: str, names: list[str]) -> set[str]:
 
 def copy_source_bundle(root: Path, source_root: Path, *, force: bool = False) -> Path:
     bundle = root / SOURCE_BUNDLE_REL
+    if source_root.resolve() == bundle.resolve():
+        return bundle
     if bundle.exists():
         shutil.rmtree(bundle)
     bundle.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_root, bundle, ignore=source_ignore)
+    tracked = run_text(["git", "-C", str(source_root), "ls-files", "-z"], timeout=30)
+    if tracked.returncode == 0:
+        bundle.mkdir()
+        for relative in filter(None, tracked.stdout.split("\0")):
+            source = source_root / relative
+            if not source.exists() and not source.is_symlink():
+                continue
+            destination = bundle / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir() and not source.is_symlink():
+                shutil.copytree(source, destination, ignore=source_ignore)
+            else:
+                shutil.copy2(source, destination, follow_symlinks=False)
+    else:
+        shutil.copytree(source_root, bundle, ignore=source_ignore)
     for path in [bundle / "bin" / "agent-harness", bundle / "tests" / "run.sh"]:
         if path.exists():
             path.chmod(path.stat().st_mode | 0o755)
@@ -400,6 +443,275 @@ def tool_report() -> dict[str, Any]:
         report[name] = entry
     report["cursor"] = {"available": report["cursor-agent"]["available"] or report["agent"]["available"], "path": report["cursor-agent"]["path"] or report["agent"]["path"]}
     return report
+
+
+def load_toolchain_manifest(source_root: Path = SOURCE_ROOT) -> dict[str, Any]:
+    manifest = load_json(source_root / TOOLCHAIN_MANIFEST_REL, {})
+    if manifest.get("schema_version") != 1:
+        raise HarnessError("Unsupported or missing toolchain manifest schema")
+    return manifest
+
+
+def detect_package_manager() -> str | None:
+    for command in ["brew", "apt-get", "dnf", "pacman", "apk"]:
+        if shutil.which(command):
+            return command
+    return None
+
+
+def probe_executables(names: list[str], extra_dirs: list[Path] | None = None) -> dict[str, Any]:
+    for name in names:
+        found = shutil.which(name)
+        if not found:
+            for directory in extra_dirs or []:
+                candidate = directory / name
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    found = str(candidate)
+                    break
+        if found:
+            result = run_text([found, "--version"], timeout=10)
+            version = (result.stdout or result.stderr).splitlines()
+            return {"available": True, "executable": name, "path": str(Path(found).resolve()), "version": version[0][:160] if version else "unknown"}
+    return {"available": False, "executables": names}
+
+
+def package_install_command(manager: str, packages: list[str]) -> list[str]:
+    if manager == "brew":
+        return [manager, "install", *packages]
+    if manager == "apt-get":
+        prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
+        return [*prefix, manager, "install", "-y", *packages]
+    if manager == "dnf":
+        prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
+        return [*prefix, manager, "install", "-y", *packages]
+    if manager == "pacman":
+        prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
+        return [*prefix, manager, "-S", "--needed", "--noconfirm", *packages]
+    if manager == "apk":
+        prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
+        return [*prefix, manager, "add", *packages]
+    raise HarnessError(f"Unsupported package manager: {manager}")
+
+
+def uv_bin_dir() -> list[Path]:
+    local_uv = Path.home() / ".local" / "bin" / "uv"
+    uv = shutil.which("uv") or (str(local_uv) if local_uv.is_file() and os.access(local_uv, os.X_OK) else None)
+    if not uv:
+        return []
+    result = run_text([uv, "tool", "dir", "--bin"], timeout=30)
+    value = result.stdout.strip()
+    return [Path(value).expanduser()] if result.returncode == 0 and value else []
+
+
+def install_tool_fallback(tool: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    fallback = tool.get("fallback", {})
+    user_bin = Path.home() / ".local" / "bin"
+    kind = fallback.get("kind")
+    if kind == "pip-user":
+        command = [sys.executable, "-m", "pip", "install", "--user", fallback["package"]]
+        result = None if dry_run else run_text(command, timeout=900)
+    elif kind == "npm-prefix":
+        npm = shutil.which("npm") or "npm"
+        command = [npm, "install", "--global", "--prefix", str(Path.home() / ".local"), fallback["package"]]
+        result = None if dry_run else run_text(command, timeout=900)
+    elif kind in {"archive", "binary"}:
+        system = "darwin" if sys.platform == "darwin" else "linux"
+        machine = platform.machine().lower()
+        arch = "arm64" if machine in {"arm64", "aarch64"} else "x86_64" if machine in {"x86_64", "amd64"} else machine
+        asset = fallback.get("assets", {}).get(f"{system}-{arch}")
+        if not asset:
+            return {"kind": "fallback", "tool": tool["id"], "command": [], "returncode": 2, "stderr": f"unsupported platform: {system}-{arch}"}
+        command = ["download-verified", asset["url"], str(user_bin / tool["executables"][0])]
+        result = None
+        if not dry_run:
+            try:
+                with urllib.request.urlopen(asset["url"], timeout=120) as response:
+                    payload = response.read(64 * 1024 * 1024 + 1)
+                if len(payload) > 64 * 1024 * 1024 or hashlib.sha256(payload).hexdigest() != asset["sha256"]:
+                    raise HarnessError(f"invalid archive for {tool['id']}")
+                executable = payload
+                if kind == "archive":
+                    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+                        members = [member for member in archive.getmembers() if member.isfile() and PurePath(member.name).name == tool["executables"][0]]
+                        if len(members) != 1:
+                            raise HarnessError(f"archive for {tool['id']} does not contain one executable")
+                        handle = archive.extractfile(members[0])
+                        if handle is None:
+                            raise HarnessError(f"cannot read executable for {tool['id']}")
+                        executable = handle.read()
+                user_bin.mkdir(parents=True, exist_ok=True)
+                destination = user_bin / tool["executables"][0]
+                destination.write_bytes(executable)
+                destination.chmod(0o755)
+                result = subprocess.CompletedProcess(command, 0, "", "")
+            except Exception as exc:
+                result = subprocess.CompletedProcess(command, 1, "", str(exc))
+    else:
+        return {"kind": "fallback", "tool": tool["id"], "command": [], "returncode": 2, "stderr": "no supported fallback"}
+    return {"kind": "fallback", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode, "stderr": "" if result is None else result.stderr[-1000:]}
+
+
+def install_toolchain(root: Path, source_root: Path, profile: str = "full", *, dry_run: bool = False) -> dict[str, Any]:
+    if profile == "none":
+        receipt = {"schema_version": 1, "profile": profile, "tools": {}, "owned": [], "actions": [], "updated_at": utc_now()}
+        if not dry_run:
+            write_json(root / "state" / "adapters" / "toolchain-receipt.json", receipt)
+        return {"ok": True, "profile": profile, "skipped": True, "tools": {}, "dry_run": dry_run}
+    manifest = load_toolchain_manifest(source_root)
+    manager = detect_package_manager()
+    before = {tool["id"]: probe_executables(tool["executables"]) for tool in manifest["system_tools"]}
+    missing = [tool for tool in manifest["system_tools"] if not before[tool["id"]]["available"]]
+    unsupported = [tool["id"] for tool in missing if (not manager or not tool.get("packages", {}).get(manager)) and not tool.get("fallback")]
+    packages = list(dict.fromkeys(tool["packages"][manager] for tool in missing if manager and tool.get("packages", {}).get(manager)))
+    actions: list[dict[str, Any]] = []
+    if packages:
+        command = package_install_command(str(manager), packages)
+        if dry_run:
+            actions.append({"kind": "system", "command": command, "returncode": None})
+        else:
+            result = run_text(command, timeout=900)
+            actions.append({"kind": "system", "command": command, "returncode": result.returncode, "stderr": result.stderr[-1000:]})
+    user_dirs = [Path.home() / ".local" / "bin"]
+    after = before if dry_run else {tool["id"]: probe_executables(tool["executables"], user_dirs) for tool in manifest["system_tools"]}
+    for tool in missing:
+        if after[tool["id"]]["available"] or not tool.get("fallback"):
+            continue
+        actions.append(install_tool_fallback(tool, dry_run=dry_run))
+    if not dry_run:
+        after = {tool["id"]: probe_executables(tool["executables"], user_dirs) for tool in manifest["system_tools"]}
+    uv_dirs = [*user_dirs, *(uv_bin_dir() if not dry_run else [])]
+    uv_before = {tool["id"]: probe_executables(tool["executables"], uv_dirs) for tool in manifest["uv_tools"]}
+    uv_after = dict(uv_before)
+    uv = after.get("uv", {}).get("path") or shutil.which("uv")
+    for tool in manifest["uv_tools"]:
+        if uv_before[tool["id"]]["available"]:
+            continue
+        command = [uv or "uv", "tool", "install", tool["package"]]
+        if dry_run:
+            actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": None})
+        elif uv:
+            result = run_text(command, timeout=900)
+            actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": result.returncode, "stderr": result.stderr[-1000:]})
+        else:
+            actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": 127, "stderr": "uv unavailable"})
+    if not dry_run:
+        uv_dirs = uv_bin_dir()
+        uv_after = {tool["id"]: probe_executables(tool["executables"], uv_dirs) for tool in manifest["uv_tools"]}
+    tools = {**after, **uv_after}
+    owned = [tool_id for tool_id, state in after.items() if state["available"] and not before[tool_id]["available"]]
+    owned.extend(tool_id for tool_id, state in uv_after.items() if state["available"] and not uv_before[tool_id]["available"])
+    missing_after = [tool_id for tool_id, state in tools.items() if not state["available"]]
+    receipt = {
+        "schema_version": 1,
+        "profile": profile,
+        "manager": manager,
+        "manifest_sha256": sha256(source_root / TOOLCHAIN_MANIFEST_REL),
+        "actions": actions,
+        "tools": tools,
+        "owned": owned,
+        "unsupported": unsupported,
+        "updated_at": utc_now(),
+    }
+    if not dry_run:
+        write_json(root / "state" / "adapters" / "toolchain-receipt.json", receipt)
+    ok = not unsupported if dry_run else not missing_after
+    return {"ok": ok, "profile": profile, "manager": manager, "tools": tools, "owned": owned, "unsupported": unsupported, "missing": missing_after, "actions": actions, "dry_run": dry_run}
+
+
+def toolchain_status(root: Path, source_root: Path) -> dict[str, Any]:
+    receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
+    profile = str(receipt.get("profile", "none"))
+    if profile == "none":
+        return {"ok": True, "profile": profile, "skipped": True, "tools": {}}
+    manifest = load_toolchain_manifest(source_root)
+    uv_dirs = [Path.home() / ".local" / "bin", *uv_bin_dir()]
+    tools = {
+        tool["id"]: probe_executables(tool["executables"], uv_dirs)
+        for tool in [*manifest["system_tools"], *manifest["uv_tools"]]
+    }
+    missing = [tool_id for tool_id, state in tools.items() if not state["available"]]
+    return {
+        "ok": not missing,
+        "profile": profile,
+        "manager": receipt.get("manager"),
+        "tools": tools,
+        "owned": receipt.get("owned", []),
+        "missing": missing,
+        "receipt": str(root / "state" / "adapters" / "toolchain-receipt.json"),
+    }
+
+
+def package_remove_command(manager: str, packages: list[str]) -> list[str]:
+    if manager == "brew":
+        return [manager, "uninstall", *packages]
+    prefix = [] if getattr(os, "geteuid", lambda: 1)() == 0 else ["sudo", "-n"]
+    if manager in {"apt-get", "dnf"}:
+        return [*prefix, manager, "remove", "-y", *packages]
+    if manager == "pacman":
+        return [*prefix, manager, "-R", "--noconfirm", *packages]
+    if manager == "apk":
+        return [*prefix, manager, "del", *packages]
+    raise HarnessError(f"Unsupported package manager: {manager}")
+
+
+def remove_owned_tools(root: Path, source_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
+    owned = set(receipt.get("owned", []))
+    if not owned:
+        return {"ok": True, "removed": [], "actions": [], "dry_run": dry_run}
+    manifest = load_toolchain_manifest(source_root)
+    manager = receipt.get("manager")
+    system = [tool for tool in manifest["system_tools"] if tool["id"] in owned]
+    packages = list(dict.fromkeys(
+        tool["packages"][manager]
+        for tool in system
+        if manager and tool.get("packages", {}).get(manager)
+    ))
+    actions: list[dict[str, Any]] = []
+    if packages:
+        command = package_remove_command(str(manager), packages)
+        result = None if dry_run else run_text(command, timeout=900)
+        actions.append({"kind": "system", "command": command, "returncode": None if result is None else result.returncode})
+    fallback_owned = {
+        action.get("tool")
+        for action in receipt.get("actions", [])
+        if action.get("kind") == "fallback" and action.get("returncode") == 0
+    }
+    for tool in system:
+        if tool["id"] not in fallback_owned:
+            continue
+        fallback = tool.get("fallback", {})
+        if fallback.get("kind") == "npm-prefix":
+            package = fallback["package"].rsplit("@", 1)[0]
+            command = [shutil.which("npm") or "npm", "uninstall", "--global", "--prefix", str(Path.home() / ".local"), package]
+            result = None if dry_run else run_text(command, timeout=900)
+        elif fallback.get("kind") == "pip-user":
+            package = fallback["package"].split("==", 1)[0]
+            command = [sys.executable, "-m", "pip", "uninstall", "-y", package]
+            result = None if dry_run else run_text(command, timeout=900)
+        elif fallback.get("kind") in {"archive", "binary"}:
+            path = Path.home() / ".local" / "bin" / tool["executables"][0]
+            command = ["remove-owned-file", str(path)]
+            result = None
+            if not dry_run:
+                try:
+                    path.unlink(missing_ok=True)
+                    result = subprocess.CompletedProcess(command, 0, "", "")
+                except OSError as exc:
+                    result = subprocess.CompletedProcess(command, 1, "", str(exc))
+        else:
+            continue
+        actions.append({"kind": "fallback", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode})
+    uv = shutil.which("uv")
+    for tool in manifest["uv_tools"]:
+        if tool["id"] not in owned:
+            continue
+        package = tool["package"].split("==", 1)[0]
+        command = [uv or "uv", "tool", "uninstall", package]
+        result = None if dry_run or not uv else run_text(command, timeout=300)
+        actions.append({"kind": "uv", "tool": tool["id"], "command": command, "returncode": None if result is None else result.returncode})
+    ok = dry_run or all(action["returncode"] == 0 for action in actions)
+    return {"ok": ok, "removed": sorted(owned), "actions": actions, "dry_run": dry_run}
 
 
 def prompt_yes_no(message: str, default: bool = True) -> bool:
@@ -491,6 +803,19 @@ def setup(args: argparse.Namespace) -> int:
     workspace = getattr(args, "workspace", None) or detect_workspace(repo)
     runtime_value = getattr(args, "runtime_root", None)
     root = expand(runtime_value) if runtime_value else Path.home() / ".agent-harness" / workspace
+    toolchain_profile = getattr(args, "toolchain", "full")
+    if getattr(args, "dry_run", False):
+        toolchain = install_toolchain(root, SOURCE_ROOT, toolchain_profile, dry_run=True)
+        data = {
+            "ok": toolchain["ok"],
+            "dry_run": True,
+            "workspace": workspace,
+            "runtime_root": str(root),
+            "repo": str(repo),
+            "toolchain": toolchain,
+        }
+        print_json(data) if args.json else print(json.dumps(data, indent=2))
+        return 0 if data["ok"] else 1
     if root.exists() and not config_path(root).exists() and any(root.iterdir()) and not args.force:
         raise HarnessError(
             f"Refusing to set up over existing unmanaged runtime: {root}. "
@@ -522,6 +847,7 @@ def setup(args: argparse.Namespace) -> int:
         print_json(data) if args.json else print_setup_failure(data)
         return 1
 
+    toolchain = install_toolchain(root, bundle, toolchain_profile)
     install_data = install_runtime_files(root, workspace, repo, args.repo_alias, bundle, write_adapters=not args.no_register)
     shims: dict[str, Any] = {}
     shim_dir = expand(args.shim_dir)
@@ -532,12 +858,13 @@ def setup(args: argparse.Namespace) -> int:
     tools = tool_report()
     prompt = next_prompt(workspace, repo)
     data = {
-        "ok": check["ok"],
+        "ok": check["ok"] and toolchain["ok"] and adapters_ok(user_adapters),
         "workspace": workspace,
         "runtime_root": str(root),
         "repo": str(repo),
         "source_bundle": str(bundle),
         "dependency_install": deps,
+        "toolchain": toolchain,
         "tools": tools,
         "adapters": install_data["adapters"],
         "user_adapters": user_adapters,
@@ -551,11 +878,11 @@ def setup(args: argparse.Namespace) -> int:
     }
     if args.json:
         print_json(data)
-    elif check["ok"]:
+    elif data["ok"]:
         print_setup_success(data)
     else:
         print_setup_failure(data)
-    return 0 if check["ok"] else 1
+    return 0 if data["ok"] else 1
 
 
 def retry_setup_command(args: argparse.Namespace, repo: Path | None, workspace: str, root: Path) -> str:
@@ -568,6 +895,7 @@ def retry_setup_command(args: argparse.Namespace, repo: Path | None, workspace: 
         parts.append("--no-shims")
     if args.force:
         parts.append("--force")
+    parts.extend(["--toolchain", getattr(args, "toolchain", "full")])
     return shlex.join(parts)
 
 
@@ -630,6 +958,16 @@ def summarize_user_adapters(data: Any) -> str:
                 statuses.append(str(value["status"]))
         parts.append(f"{name}={'+'.join(sorted(set(statuses))) if statuses else 'ready'}")
     return ", ".join(parts)
+
+
+def adapters_ok(data: Any) -> bool:
+    if isinstance(data, dict):
+        if data.get("status") in {"failed", "partial"}:
+            return False
+        return all(adapters_ok(value) for value in data.values())
+    if isinstance(data, list):
+        return all(adapters_ok(value) for value in data)
+    return True
 
 
 def print_setup_failure(data: dict[str, Any]) -> None:
@@ -695,8 +1033,30 @@ def instruction_body(root: Path, workspace: str) -> str:
         - Policy gates run locally: secret-file access, remote-code piping, prod-affecting actions, and un-intended connector writes are blocked; destructive commands ask first outside yolo mode.
         - For PR reviews, use the draft-only PR review flow; do not post comments unless the user explicitly asks and a matching write intent exists.
         - Full instructions: `{root / 'instructions' / 'agent-harness.md'}`. Runtime: `{root}`
+        - Semble, Serena, Headroom, and credential-free Context7 are configured as general MCPs when the full toolchain is installed. Playwright stays lazy; use `npx --yes @playwright/mcp@latest` only for browser work.
         """
     ).strip()
+
+
+def toolchain_mcp_specs(root: Path, client: str) -> list[dict[str, Any]]:
+    receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
+    if receipt.get("profile") != "full":
+        return []
+    tools = receipt.get("tools", {})
+    specs: list[dict[str, Any]] = []
+    for tool_id in ["semble", "serena", "headroom"]:
+        path = tools.get(tool_id, {}).get("path")
+        if not path:
+            continue
+        args: list[str] = []
+        if tool_id == "serena":
+            context = "codex" if client == "codex" else "claude-code" if client == "claude" else "ide"
+            args = ["start-mcp-server", f"--context={context}", "--project-from-cwd"]
+        elif tool_id == "headroom":
+            args = ["mcp", "serve"]
+        specs.append({"name": f"agent-harness-{tool_id}", "command": path, "args": args})
+    specs.append({"name": "agent-harness-context7", "url": "https://mcp.context7.com/mcp"})
+    return specs
 
 
 def install_codex_adapters(root: Path, config: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
@@ -721,8 +1081,15 @@ def install_codex_adapters(root: Path, config: dict[str, Any], *, force: bool = 
             "",
             f"[mcp_servers.{name}.env]",
             f"AGENT_HARNESS_ROOT = {json.dumps(str(root))}",
+            'AGENT_HARNESS_MCP_PROFILE = "compact"',
         ]
     )
+    for spec in toolchain_mcp_specs(root, "codex"):
+        mcp_body += f"\n\n[mcp_servers.{spec['name']}]\n"
+        if spec.get("url"):
+            mcp_body += f"url = {json.dumps(spec['url'])}"
+        else:
+            mcp_body += f"command = {json.dumps(spec['command'])}\nargs = {json.dumps(spec['args'])}"
     mcp = write_managed_block_file(root, config_path_, "codex-mcp", mcp_begin, mcp_end, mcp_body, backup=False)
     skills = install_asset_files(root, skill_asset_pairs(root, codex_home / "skills" / "agent-harness"), "codex-skills.json")
     return {"instructions": instructions, "mcp": mcp, "skills": skills}
@@ -923,6 +1290,9 @@ def install_claude_adapters(root: Path, config: dict[str, Any], repo: Path | Non
     result["agents"] = install_asset_files(root, agent_asset_pairs(root, claude_home / "agents"), "claude-agents.json")
     if command_available("claude"):
         name = config["mcp"]["name"]
+        previous_names = load_json(root / "state" / "adapters" / "claude-mcp-servers.json", {}).get("servers", [])
+        for previous_name in previous_names:
+            run_text(["claude", "mcp", "remove", "--scope", "user", previous_name], timeout=30)
         command = [
             "claude",
             "mcp",
@@ -931,20 +1301,31 @@ def install_claude_adapters(root: Path, config: dict[str, Any], repo: Path | Non
             "stdio",
             "--scope",
             "user",
+            name,
             "--env",
             f"AGENT_HARNESS_ROOT={root}",
-            name,
+            "--env",
+            "AGENT_HARNESS_MCP_PROFILE=compact",
             "--",
             str(root / "mcp" / "server.mjs"),
         ]
         run = run_text(command, timeout=60)
-        result["mcp"] = {"ok": run.returncode == 0, "status": "registered" if run.returncode == 0 else "failed", "command": "claude mcp add --scope user ...", "stderr": run.stderr[-500:]}
+        servers = [{"name": name, "ok": run.returncode == 0, "stderr": run.stderr[-500:]}]
+        for spec in toolchain_mcp_specs(root, "claude"):
+            if spec.get("url"):
+                extra = ["claude", "mcp", "add", "--transport", "http", "--scope", "user", spec["name"], spec["url"]]
+            else:
+                extra = ["claude", "mcp", "add", "--transport", "stdio", "--scope", "user", spec["name"], "--", spec["command"], *spec["args"]]
+            added = run_text(extra, timeout=60)
+            servers.append({"name": spec["name"], "ok": added.returncode == 0, "stderr": added.stderr[-500:]})
+        write_json(root / "state" / "adapters" / "claude-mcp-servers.json", {"servers": [item["name"] for item in servers if item["ok"]]})
+        result["mcp"] = {"ok": all(item["ok"] for item in servers), "status": "registered" if all(item["ok"] for item in servers) else "failed", "command": "claude mcp add --scope user ...", "servers": servers}
     else:
         result["mcp"] = {"ok": False, "status": "skipped", "reason": "claude not found"}
     return result
 
 
-CURSOR_HOOK_EVENTS = ["beforeShellExecution", "beforeMCPExecution"]
+CURSOR_HOOK_EVENTS = ["preToolUse"]
 CURSOR_DENY_RULES = [
     "Read(**/.env)",
     "Read(**/.env.*)",
@@ -973,12 +1354,18 @@ def merge_cursor_hooks(root: Path, hooks_path: Path) -> dict[str, Any]:
     data.setdefault("version", 1)
     hooks = data.setdefault("hooks", {})
     command = cursor_bridge_command(root)
-    for event in CURSOR_HOOK_EVENTS:
+    for event in list(hooks):
         entries = [
             entry
             for entry in hooks.get(event, [])
             if not (isinstance(entry, dict) and any(marker in str(entry.get("command", "")) for marker in HARNESS_HOOK_MARKERS))
         ]
+        if entries:
+            hooks[event] = entries
+        else:
+            hooks.pop(event)
+    for event in CURSOR_HOOK_EVENTS:
+        entries = hooks.get(event, [])
         entries.append({"command": command})
         hooks[event] = entries
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1025,22 +1412,51 @@ def merge_cursor_cli_permissions(root: Path, cli_config_path: Path) -> dict[str,
             return {"ok": False, "status": "skipped", "path": str(cli_config_path), "reason": "existing cli-config.json is not a JSON object"}
     else:
         data = {}
-    backup = backup_user_file(root, cli_config_path, "cursor-cli-config")
+    metadata_path = root / "state" / "adapters" / "cursor-cli-config.json"
+    previous = load_json(metadata_path, {})
+    same_install = previous.get("path") == str(cli_config_path)
+    backup = previous.get("backup") if same_install else None
+    original = load_json(Path(backup), data) if backup else data
+    permissions_was_present = bool(
+        previous.get("permissions_was_present", "permissions" in original)
+    ) if same_install else "permissions" in data
+    original_permissions = original.get("permissions", {})
+    deny_was_present = bool(
+        previous.get(
+            "deny_was_present",
+            isinstance(original_permissions, dict) and "deny" in original_permissions,
+        )
+    ) if same_install else (
+        isinstance(data.get("permissions"), dict)
+        and "deny" in data["permissions"]
+    )
+    if not backup:
+        backup = backup_user_file(root, cli_config_path, "cursor-cli-config")
     permissions = data.setdefault("permissions", {})
     deny = permissions.setdefault("deny", [])
     added = [rule for rule in CURSOR_DENY_RULES if rule not in deny]
     deny.extend(added)
+    owned_deny = list(dict.fromkeys(
+        [*(previous.get("added_deny", []) if same_install else []), *added]
+    ))
     cli_config_path.parent.mkdir(parents=True, exist_ok=True)
     cli_config_path.write_text(json.dumps(data, indent=2) + "\n")
-    write_json(root / "state" / "adapters" / "cursor-cli-config.json", {"path": str(cli_config_path), "added_deny": added, "backup": backup, "updated_at": utc_now()})
-    return {"ok": True, "status": "installed", "path": str(cli_config_path), "kind": "cursor-cli-permissions", "added_deny": added, "backup": backup}
+    write_json(metadata_path, {
+        "path": str(cli_config_path),
+        "added_deny": owned_deny,
+        "permissions_was_present": permissions_was_present,
+        "deny_was_present": deny_was_present,
+        "backup": backup,
+        "updated_at": utc_now(),
+    })
+    return {"ok": True, "status": "installed", "path": str(cli_config_path), "kind": "cursor-cli-permissions", "added_deny": owned_deny, "backup": backup}
 
 
 def restore_cursor_cli_permissions(root: Path) -> dict[str, Any]:
     metadata = load_json(root / "state" / "adapters" / "cursor-cli-config.json", {})
     path_text = metadata.get("path")
     if not path_text:
-        return {"restored": False, "reason": "no cursor cli-config metadata"}
+        return {"restored": True, "skipped": True, "reason": "Cursor CLI config was not modified"}
     cli_config_path = Path(path_text).expanduser()
     if not cli_config_path.exists():
         return {"restored": False, "reason": "cli-config missing"}
@@ -1054,9 +1470,13 @@ def restore_cursor_cli_permissions(root: Path) -> dict[str, Any]:
         for rule in metadata.get("added_deny", []):
             if rule in deny:
                 deny.remove(rule)
-        if not deny:
+        if not deny and not metadata.get("deny_was_present", False):
             permissions.pop("deny", None)
-    if isinstance(permissions, dict) and not permissions:
+    if (
+        isinstance(permissions, dict)
+        and not permissions
+        and not metadata.get("permissions_was_present", False)
+    ):
         data.pop("permissions", None)
     cli_config_path.write_text(json.dumps(data, indent=2) + "\n")
     return {"restored": True, "path": str(cli_config_path), "kind": "cursor-cli-permissions"}
@@ -1065,27 +1485,29 @@ def restore_cursor_cli_permissions(root: Path) -> dict[str, Any]:
 def install_cursor_adapters(root: Path, config: dict[str, Any], repo: Path | None, *, force: bool = False) -> dict[str, Any]:
     workspace = str(config.get("workspace", root.name))
     result: dict[str, Any] = {}
-    if repo:
-        rule = repo / ".cursor" / "rules" / "agent-harness.mdc"
-        rule.parent.mkdir(parents=True, exist_ok=True)
-        rule.write_text(
-            textwrap.dedent(
-                f"""\
-                ---
-                alwaysApply: true
-                ---
+    rule = Path.home() / ".cursor" / "rules" / "agent-harness.mdc"
+    rule.parent.mkdir(parents=True, exist_ok=True)
+    rule.write_text(
+        f"""---
+description: Global Agent Harness workflow and policy
+alwaysApply: true
+---
 
-                # Agent Harness
+{instruction_body(root, workspace)}
 
-                {instruction_body(root, workspace)}
-                """
-            )
-        )
-        add_git_info_exclude(repo, [".cursor/rules/agent-harness.mdc"])
-        result["project_rule"] = {"ok": True, "status": "installed", "path": str(rule), "kind": "managed-file"}
+## Code retrieval
+
+- Use Semble for conceptual discovery when names or locations are unknown, then verify candidates with Serena or native code tools.
+- Use Serena for definitions, references, implementations, diagnostics, and symbol-scale edits after activating the current project.
+"""
+    )
+    result["user_rule"] = {"ok": True, "status": "installed", "path": str(rule), "kind": "managed-file"}
     cursor_mcp = Path.home() / ".cursor" / "mcp.json"
     name = config["mcp"]["name"]
-    server_config = {"command": str(root / "mcp" / "server.mjs"), "env": {"AGENT_HARNESS_ROOT": str(root)}}
+    server_config = {"command": str(root / "mcp" / "server.mjs"), "env": {"AGENT_HARNESS_ROOT": str(root), "AGENT_HARNESS_MCP_PROFILE": "compact"}}
+    desired = {name: server_config}
+    for spec in toolchain_mcp_specs(root, "cursor"):
+        desired[spec["name"]] = ({"url": spec["url"]} if spec.get("url") else {"command": spec["command"], "args": spec["args"]})
     if cursor_mcp.exists():
         try:
             data = json.loads(cursor_mcp.read_text())
@@ -1093,18 +1515,27 @@ def install_cursor_adapters(root: Path, config: dict[str, Any], repo: Path | Non
             result["mcp"] = {"ok": False, "status": "skipped", "path": str(cursor_mcp), "reason": f"existing mcp.json is invalid JSON: {exc}"}
             return result
         servers = data.setdefault("mcpServers", {})
-        if name not in servers and not force:
-            result["mcp"] = {"ok": False, "status": "skipped", "path": str(cursor_mcp), "reason": "existing mcp.json left unchanged; use --force to merge"}
-            return result
-        servers[name] = server_config
+        previous = set(load_json(root / "state" / "adapters" / "cursor-mcp-servers.json", {}).get("servers", []))
+        conflicts = [server_name for server_name in desired if server_name in servers and server_name not in previous and not force]
+        for server_name, value in desired.items():
+            if server_name not in conflicts:
+                servers[server_name] = value
         cursor_mcp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-        result["mcp"] = {"ok": True, "status": "installed", "path": str(cursor_mcp), "backup": None}
+        owned = [server_name for server_name in desired if server_name not in conflicts]
+        result["mcp"] = {"ok": not conflicts, "status": "installed" if not conflicts else "partial", "path": str(cursor_mcp), "backup": None, "servers": owned, "conflicts": conflicts}
     else:
         cursor_mcp.parent.mkdir(parents=True, exist_ok=True)
-        cursor_mcp.write_text(json.dumps({"mcpServers": {name: server_config}}, indent=2, sort_keys=True) + "\n")
-        result["mcp"] = {"ok": True, "status": "installed", "path": str(cursor_mcp)}
+        cursor_mcp.write_text(json.dumps({"mcpServers": desired}, indent=2, sort_keys=True) + "\n")
+        result["mcp"] = {"ok": True, "status": "installed", "path": str(cursor_mcp), "servers": list(desired)}
+    write_json(root / "state" / "adapters" / "cursor-mcp-servers.json", {"servers": result["mcp"].get("servers", [])})
     result["hooks"] = merge_cursor_hooks(root, Path.home() / ".cursor" / "hooks.json")
-    result["cli_permissions"] = merge_cursor_cli_permissions(root, Path.home() / ".cursor" / "cli-config.json")
+    result["cli_permissions"] = {
+        "ok": True,
+        "status": "skipped",
+        "path": str(Path.home() / ".cursor" / "cli-config.json"),
+        "kind": "cursor-cli-permissions",
+        "reason": "Cursor hooks enforce Harness policy; CLI config left unchanged",
+    }
     return result
 
 
@@ -1402,25 +1833,29 @@ def restore_user_adapters(root: Path) -> dict[str, Any]:
                 results.append({"path": str(path), "restored": True, "kind": "managed-file"})
     cursor = data.get("cursor") if isinstance(data, dict) else {}
     cursor_mcp = cursor.get("mcp") if isinstance(cursor, dict) else {}
-    if isinstance(cursor_mcp, dict) and cursor_mcp.get("path") and cursor_mcp.get("status") == "installed":
+    if isinstance(cursor_mcp, dict) and cursor_mcp.get("path") and cursor_mcp.get("status") in {"installed", "partial"}:
         path = Path(cursor_mcp["path"]).expanduser()
         name = load_config(root).get("mcp", {}).get("name", f"{workspace}-agent-harness")
         if path.exists():
             try:
                 parsed = json.loads(path.read_text())
                 servers = parsed.get("mcpServers", {})
-                if isinstance(servers, dict) and name in servers:
-                    servers.pop(name, None)
+                owned = load_json(root / "state" / "adapters" / "cursor-mcp-servers.json", {}).get("servers", [name])
+                if isinstance(servers, dict):
+                    for server_name in owned:
+                        servers.pop(server_name, None)
                     path.write_text(json.dumps(parsed, indent=2, sort_keys=True) + "\n")
                     results.append({"path": str(path), "restored": True, "kind": "cursor-mcp"})
             except json.JSONDecodeError:
                 results.append({"path": str(path), "restored": False, "kind": "cursor-mcp", "reason": "invalid JSON"})
     claude = data.get("claude") if isinstance(data, dict) else {}
     claude_mcp = claude.get("mcp") if isinstance(claude, dict) else {}
-    if isinstance(claude_mcp, dict) and claude_mcp.get("status") == "registered" and command_available("claude"):
-        name = load_config(root).get("mcp", {}).get("name", f"{workspace}-agent-harness")
-        run = run_text(["claude", "mcp", "remove", name], timeout=30)
-        results.append({"server": name, "restored": run.returncode == 0, "kind": "claude-mcp", "stderr": run.stderr[-300:]})
+    if isinstance(claude_mcp, dict) and claude_mcp.get("status") in {"registered", "failed"} and command_available("claude"):
+        default_name = load_config(root).get("mcp", {}).get("name", f"{workspace}-agent-harness")
+        names = load_json(root / "state" / "adapters" / "claude-mcp-servers.json", {}).get("servers", [default_name])
+        for name in names:
+            run = run_text(["claude", "mcp", "remove", "--scope", "user", name], timeout=30)
+            results.append({"server": name, "restored": run.returncode == 0, "kind": "claude-mcp", "stderr": run.stderr[-300:]})
     results.append(restore_claude_settings(root) | {"kind": "claude-settings"})
     results.append(restore_cursor_hooks(root) | {"kind": "cursor-hooks"})
     results.append(restore_cursor_cli_permissions(root) | {"kind": "cursor-cli-permissions"})
@@ -1453,12 +1888,20 @@ def uninstall(args: argparse.Namespace) -> int:
     # (and other tool configs) still point at its hook scripts would make those hooks
     # exit non-zero on every tool call and brick the agent. Opt out only with --keep-adapters.
     restore = not args.keep_adapters
+    source_root = configured_source_root(root)
+    remove_tools = bool(getattr(args, "remove_owned_tools", False))
     if args.dry_run:
-        data = {"ok": True, "dry_run": True, "would_remove": str(root), "would_restore_adapters": restore}
+        tools = remove_owned_tools(root, source_root, dry_run=True) if remove_tools else {"skipped": True}
+        data = {"ok": True, "dry_run": True, "would_remove": str(root), "would_restore_adapters": restore, "owned_tools": tools}
     else:
         restored = {"shims": restore_shims(root), "user_adapters": restore_user_adapters(root)} if restore else {"skipped": "kept by --keep-adapters"}
+        tools = remove_owned_tools(root, source_root) if remove_tools else {"skipped": True}
+        if remove_tools and not tools["ok"]:
+            data = {"ok": False, "removed": False, "runtime_root": str(root), "restored_adapters": restored, "owned_tools": tools}
+            print_json(data) if args.json else print("Owned-tool removal failed; runtime left in place for retry.")
+            return 1
         shutil.rmtree(root)
-        data = {"ok": True, "removed": True, "runtime_root": str(root), "restored_adapters": restored}
+        data = {"ok": True, "removed": True, "runtime_root": str(root), "restored_adapters": restored, "owned_tools": tools}
     if args.json:
         print_json(data)
     elif args.dry_run:
@@ -1496,6 +1939,10 @@ def doctor(args: argparse.Namespace) -> int:
         return 1
     source_root = configured_source_root(root)
     data = collect_self_check(root, source_root)
+    data["toolchain"] = toolchain_status(root, source_root)
+    if not data["toolchain"]["ok"]:
+        data["ok"] = False
+        data["failures"].append("toolchain is missing: " + ", ".join(data["toolchain"].get("missing", [])))
     if args.json:
         print_json(data)
     else:
@@ -1542,6 +1989,7 @@ def where_command(args: argparse.Namespace) -> int:
         "shims": shims,
         "adapters": {name: {"path": str(path), "exists": path.exists()} for name, path in adapter_paths.items()},
         "user_adapters": user_adapters,
+        "toolchain": toolchain_status(root, source_root),
     }
     if args.json:
         print_json(data)
@@ -1582,7 +2030,9 @@ def upgrade(args: argparse.Namespace) -> int:
     default = default_repo(config)
     repo = default[1] if default else None
     if args.dry_run:
-        data = {"ok": True, "dry_run": True, "would_copy_source_to": str(root / SOURCE_BUNDLE_REL), "workspace": workspace}
+        receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
+        profile = getattr(args, "toolchain", None) or receipt.get("profile", "full")
+        data = {"ok": True, "dry_run": True, "would_copy_source_to": str(root / SOURCE_BUNDLE_REL), "workspace": workspace, "toolchain": install_toolchain(root, SOURCE_ROOT, profile, dry_run=True)}
         print_json(data) if args.json else print(data)
         return 0
     bundle = copy_source_bundle(root, SOURCE_ROOT, force=True)
@@ -1592,12 +2042,15 @@ def upgrade(args: argparse.Namespace) -> int:
         print_json(data) if args.json else print_setup_failure(data)
         return 1
     install_data = install_runtime_files(root, workspace, repo, default[0] if default else None, bundle, write_adapters=False)
+    receipt = load_json(root / "state" / "adapters" / "toolchain-receipt.json", {})
+    profile = getattr(args, "toolchain", None) or receipt.get("profile", "full")
+    toolchain = install_toolchain(root, bundle, profile)
     # Re-sync user-level adapters so newly shipped skills, subagents, hooks, and
     # settings reach the agent surfaces; managed blocks and sha-tracked assets make
     # this idempotent. Without this, `upgrade` silently leaves stale skills behind.
     adapters = {"skipped": True} if args.no_adapters else install_user_adapters(root, install_data["config"], repo, force=False)
     check = collect_self_check(root, bundle, skip_mcp=args.skip_deps)
-    data = {"ok": check["ok"], "runtime_root": str(root), "source_bundle": str(bundle), "dependency_install": deps, "adapters": summarize_user_adapters(adapters), "self_check": check}
+    data = {"ok": check["ok"] and toolchain["ok"] and adapters_ok(adapters), "runtime_root": str(root), "source_bundle": str(bundle), "dependency_install": deps, "toolchain": toolchain, "adapters": summarize_user_adapters(adapters), "self_check": check}
     if args.json:
         print_json(data)
     else:
@@ -1606,7 +2059,7 @@ def upgrade(args: argparse.Namespace) -> int:
         print(f"Source bundle: {bundle}")
         for failure in check["failures"]:
             print(f"- {failure}")
-    return 0 if check["ok"] else 1
+    return 0 if data["ok"] else 1
 
 
 def open_dashboard(args: argparse.Namespace) -> int:
@@ -2047,8 +2500,10 @@ def run_check(args: argparse.Namespace) -> int:
         raise HarnessError("run-check requires a command after `--`")
     _, repo = resolve_repo(root, None) if load_config(root).get("repos") else (None, Path.cwd())
     manifest = load_json(task_dir(root, task_id) / "task.json", {})
-    cwd = Path(str(manifest.get("worktree", ""))) if Path(str(manifest.get("worktree", ""))).is_dir() else expand(str(manifest.get("repo_path", repo)))
-    result = run_text(command, cwd=cwd, timeout=args.timeout)
+    cwd = task_execution_cwd(manifest, repo)
+    child_env = os.environ.copy()
+    child_env.pop("AGENT_HARNESS_ROOT", None)
+    result = run_text(command, cwd=cwd, timeout=args.timeout, env=child_env)
     output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
     record = record_check(root, task_id, shlex.join(command), result.returncode, output)
     data = {"ok": record["passed"], "task_id": task_id, "command": record["command"], "returncode": record["returncode"], "checks": str(checks_path(root, task_id))}
@@ -2257,6 +2712,75 @@ def wrapper_for(root: Path, agent: str) -> Path:
     return root / "bin" / {"codex": "ah-codex", "claude": "ah-claude", "cursor": "ah-cursor"}[agent]
 
 
+def resolve_codex_route(
+    role: str,
+    risk: str,
+    *,
+    prior_attempts: int = 0,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    fast: bool = False,
+) -> dict[str, Any]:
+    """Resolve one bounded Codex run without changing the user's global defaults."""
+    if model is not None and model not in CODEX_ROUTE_MODELS:
+        raise HarnessError(f"Unsupported Codex route model: {model}")
+    if reasoning_effort is not None and reasoning_effort not in CODEX_ROUTE_EFFORTS:
+        raise HarnessError(f"Unsupported Codex route reasoning effort: {reasoning_effort}")
+    if prior_attempts < 0:
+        raise HarnessError("Codex route prior_attempts must be non-negative")
+
+    normalized_role = str(role).lower()
+    normalized_risk = str(risk).lower()
+    if model is not None or reasoning_effort is not None:
+        selected_model = model
+        if selected_model is None:
+            selected_model = resolve_codex_route(
+                normalized_role, normalized_risk, prior_attempts=prior_attempts
+            )["model"]
+        default_effort = "high" if selected_model == "gpt-5.6-terra" else "max"
+        reason = "explicit-override"
+    elif prior_attempts:
+        selected_model, default_effort, reason = "gpt-5.6-sol", "max", "retry-escalation"
+    elif normalized_role == "planner":
+        selected_model, default_effort, reason = "gpt-5.6-sol", "max", "planner"
+    elif normalized_risk in CODEX_HIGH_RISK:
+        selected_model, default_effort, reason = "gpt-5.6-sol", "max", "high-risk"
+    elif normalized_role == "reviewer":
+        selected_model, default_effort, reason = "gpt-5.6-terra", "high", "review"
+    elif normalized_role == "security":
+        selected_model, default_effort, reason = "gpt-5.6-terra", "max", "security"
+    elif normalized_role in {"researcher", "worker", "qa", "synthesizer"}:
+        selected_model, default_effort, reason = "gpt-5.6-luna", "max", "routine"
+    else:
+        selected_model, default_effort, reason = "gpt-5.6-sol", "max", "unknown-role"
+
+    return {
+        "model": selected_model,
+        "reasoning_effort": reasoning_effort or default_effort,
+        "speed": "fast" if fast else "standard",
+        "role": normalized_role,
+        "risk": normalized_risk,
+        "attempt": prior_attempts + 1,
+        "reason": reason,
+        "escalated": reason == "retry-escalation",
+    }
+
+
+def codex_exec_args(output_path: Path, prompt: str, route: dict[str, Any]) -> list[str]:
+    args = [
+        "exec",
+        "--model",
+        str(route["model"]),
+        "-c",
+        f'model_reasoning_effort="{route["reasoning_effort"]}"',
+        "-c",
+        f'features.fast_mode={str(route["speed"] == "fast").lower()}',
+    ]
+    if route["speed"] == "fast":
+        args += ["-c", 'service_tier="fast"']
+    return args + ["--output-last-message", str(output_path), prompt]
+
+
 def agent_run(args: argparse.Namespace) -> int:
     root = runtime_root(args)
     task_id = latest_task_id(root) if args.task_id == "latest" else valid_task_id(args.task_id)
@@ -2266,28 +2790,43 @@ def agent_run(args: argparse.Namespace) -> int:
     prompt = args.prompt
     assert_no_sensitive_text(root, prompt, "agent prompt")
     (run_dir / "prompt.md").write_text(prompt if prompt.endswith("\n") else prompt + "\n")
+    manifest = load_json(task_dir(root, task_id) / "task.json", {})
+    cwd = task_execution_cwd(manifest)
     command = [str(wrapper_for(root, args.agent)), "--task", task_id]
+    route = None
     if args.agent == "codex":
-        command += ["exec", "--output-last-message", str(run_dir / "final.md"), prompt]
+        route = resolve_codex_route(
+            args.role,
+            str(manifest.get("risk", "auto")),
+            model=getattr(args, "codex_model", None),
+            reasoning_effort=getattr(args, "codex_effort", None),
+            fast=bool(getattr(args, "codex_fast", False)),
+        )
+        command += codex_exec_args(run_dir / "final.md", prompt, route)
     elif args.agent == "claude":
         command += ["-p", "--output-format", "json", prompt]
     else:
         command += ["-p", "--output-format", "json", prompt]
     metadata = {"task_id": task_id, "agent": args.agent, "role": args.role, "run_id": run_id, "command": command, "started_at": utc_now(), "dry_run": args.dry_run}
+    if route:
+        metadata["route"] = route
     write_json(run_dir / "metadata.json", metadata)
     if args.dry_run:
         (run_dir / "final.md").write_text("Dry run: peer agent not launched.\n")
         metadata.update({"ok": True, "status": "dry-run", "finished_at": utc_now()})
         write_json(run_dir / "metadata.json", metadata)
     else:
-        result = run_text(command, cwd=Path.cwd(), timeout=args.timeout)
+        result = run_text(command, cwd=cwd, timeout=args.timeout)
         (run_dir / "stdout.txt").write_text(result.stdout)
         (run_dir / "stderr.txt").write_text(result.stderr)
         if not (run_dir / "final.md").exists():
             (run_dir / "final.md").write_text(result.stdout or result.stderr or "")
         metadata.update({"ok": result.returncode == 0, "status": "complete" if result.returncode == 0 else "failed", "returncode": result.returncode, "finished_at": utc_now()})
         write_json(run_dir / "metadata.json", metadata)
-    print_json({"ok": metadata["ok"], "run_dir": str(run_dir), "metadata": str(run_dir / "metadata.json")})
+    data = {"ok": metadata["ok"], "run_dir": str(run_dir), "metadata": str(run_dir / "metadata.json")}
+    if route:
+        data["route"] = route
+    print_json(data)
     return 0 if metadata["ok"] else 1
 
 
@@ -2544,7 +3083,7 @@ def step_prompt(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, 
     return "\n".join(lines)
 
 
-def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, Any], agent: str, cwd: Path, timeout: int, dry_run: bool, retry_context: list[str]) -> str:
+def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str, Any], agent: str, cwd: Path, timeout: int, dry_run: bool, retry_context: list[str], route: dict[str, Any] | None = None) -> str:
     step_dir = orchestration_dir(root, task_id) / "steps" / step["id"]
     step_dir.mkdir(parents=True, exist_ok=True)
     repo_path = str(cwd)
@@ -2558,11 +3097,16 @@ def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str
         else:
             output = DRY_RUN_OUTPUTS.get(step["role"], "ok\n")
         (step_dir / "final.md").write_text(output)
-        write_json(step_dir / "metadata.json", {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": True, "ok": True, "finished_at": utc_now()})
+        metadata = {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": True, "ok": True, "finished_at": utc_now()}
+        if route:
+            metadata["route"] = route
+        write_json(step_dir / "metadata.json", metadata)
         return output
     command = [str(wrapper_for(root, agent)), "--task", task_id]
     if agent == "codex":
-        command += ["exec", "--output-last-message", str(step_dir / "final.md"), prompt]
+        if route is None:
+            raise HarnessError(f"step {step['id']} is missing its resolved Codex route")
+        command += codex_exec_args(step_dir / "final.md", prompt, route)
     else:
         command += ["-p", prompt]
     result = run_text(command, cwd=cwd, timeout=timeout)
@@ -2571,7 +3115,10 @@ def dispatch_step(root: Path, task_id: str, plan: dict[str, Any], step: dict[str
     final = step_dir / "final.md"
     if not final.exists() or not final.read_text(errors="replace").strip():
         final.write_text(result.stdout or result.stderr or "")
-    write_json(step_dir / "metadata.json", {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": False, "returncode": result.returncode, "ok": result.returncode == 0, "finished_at": utc_now()})
+    metadata = {"step": step["id"], "role": step["role"], "agent": agent, "dry_run": False, "returncode": result.returncode, "ok": result.returncode == 0, "finished_at": utc_now()}
+    if route:
+        metadata["route"] = route
+    write_json(step_dir / "metadata.json", metadata)
     if result.returncode != 0:
         raise HarnessError(f"step {step['id']} agent process failed (rc={result.returncode}): {result.stderr.strip()[:300]}")
     return final.read_text(errors="replace")
@@ -2657,9 +3204,24 @@ def orchestrate_plan(args: argparse.Namespace) -> int:
     agent = pick_orchestration_agent(config, args.agent, dry_run=args.dry_run)
     risk = str(manifest.get("risk", "auto"))
     max_steps = args.max_steps
+    planner_route = None
+    if agent == "codex":
+        planner_route = resolve_codex_route(
+            "planner",
+            risk,
+            model=getattr(args, "codex_model", None),
+            reasoning_effort=getattr(args, "codex_effort", None),
+            fast=bool(getattr(args, "codex_fast", False)),
+        )
     if args.dry_run:
         steps = normalize_steps(default_plan_steps(risk), max_steps)
         planner_note = "dry-run default plan"
+        step_dir = orchestration_dir(root, task_id) / "steps" / "plan"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        metadata = {"step": "plan", "role": "planner", "agent": agent, "dry_run": True, "ok": True, "finished_at": utc_now()}
+        if planner_route:
+            metadata["route"] = planner_route
+        write_json(step_dir / "metadata.json", metadata)
     else:
         packet = (task_dir(root, task_id) / "packet.md").read_text(errors="replace")[:8000]
         prompt = "\n".join(
@@ -2678,10 +3240,18 @@ def orchestrate_plan(args: argparse.Namespace) -> int:
         (step_dir / "prompt.md").write_text(prompt + "\n")
         command = [str(wrapper_for(root, agent)), "--task", task_id]
         if agent == "codex":
-            command += ["exec", "--output-last-message", str(step_dir / "final.md"), prompt]
+            if planner_route is None:
+                raise HarnessError("planner is missing its resolved Codex route")
+            command += codex_exec_args(step_dir / "final.md", prompt, planner_route)
         else:
             command += ["-p", prompt]
-        result = run_text(command, cwd=expand(manifest.get("repo_path", str(Path.cwd()))), timeout=args.step_timeout)
+        metadata = {"step": "plan", "role": "planner", "agent": agent, "dry_run": False, "command": command, "started_at": utc_now()}
+        if planner_route:
+            metadata["route"] = planner_route
+        write_json(step_dir / "metadata.json", metadata)
+        result = run_text(command, cwd=task_execution_cwd(manifest), timeout=args.step_timeout)
+        metadata.update({"returncode": result.returncode, "ok": result.returncode == 0, "finished_at": utc_now()})
+        write_json(step_dir / "metadata.json", metadata)
         output = (step_dir / "final.md").read_text(errors="replace") if (step_dir / "final.md").exists() else result.stdout
         (step_dir / "final.md").write_text(output if output.endswith("\n") else output + "\n")
         try:
@@ -2691,9 +3261,16 @@ def orchestrate_plan(args: argparse.Namespace) -> int:
             steps = normalize_steps(default_plan_steps(risk), max_steps)
             planner_note = f"fallback default plan ({exc})"
     plan = {"task_id": task_id, "created_at": utc_now(), "planner": planner_note, "agent": agent, "steps": steps}
+    if planner_route:
+        plan["planner_route"] = planner_route
     save_plan(root, task_id, plan)
-    orch_ledger(root, task_id, "plan-created", planner=planner_note, steps=[step["id"] for step in steps])
+    ledger_fields = {"planner": planner_note, "steps": [step["id"] for step in steps]}
+    if planner_route:
+        ledger_fields["route"] = planner_route
+    orch_ledger(root, task_id, "plan-created", **ledger_fields)
     data = {"ok": True, "task_id": task_id, "planner": planner_note, "steps": [{"id": s["id"], "role": s["role"], "depends_on": s["depends_on"]} for s in steps], "plan": str(orchestration_dir(root, task_id) / "plan.json")}
+    if planner_route:
+        data["route"] = planner_route
     print_json(data) if args.json else print(f"Planned {len(steps)} steps for {task_id} ({planner_note})")
     return 0
 
@@ -2733,13 +3310,26 @@ def orchestrate_run(args: argparse.Namespace) -> int:
         raise HarnessError(f"Task not found: {task_id}")
     _run_lock = acquire_run_lock(root, task_id)  # noqa: F841 (held for the run's lifetime)
     if not (orchestration_dir(root, task_id) / "plan.json").exists():
-        quiet_call(orchestrate_plan, argparse.Namespace(runtime_root=str(root), task_id=task_id, agent=args.agent, dry_run=args.dry_run, max_steps=args.max_steps, step_timeout=args.step_timeout, json=False))
+        quiet_call(
+            orchestrate_plan,
+            argparse.Namespace(
+                runtime_root=str(root),
+                task_id=task_id,
+                agent=args.agent,
+                dry_run=args.dry_run,
+                max_steps=args.max_steps,
+                step_timeout=args.step_timeout,
+                codex_model=getattr(args, "codex_model", None),
+                codex_effort=getattr(args, "codex_effort", None),
+                codex_fast=bool(getattr(args, "codex_fast", False)),
+                json=False,
+            ),
+        )
     plan = load_plan(root, task_id)
     steps = plan["steps"]
     config = load_config(root)
     agent = pick_orchestration_agent(config, args.agent, dry_run=args.dry_run)
-    worktree = Path(str(manifest.get("worktree", "")))
-    cwd = worktree if worktree.is_dir() else expand(str(manifest.get("repo_path", Path.cwd())))
+    cwd = task_execution_cwd(manifest)
     by_id = {step["id"]: step for step in steps}
 
     # Guard against a hand-edited plan referencing an unknown dependency (would
@@ -2789,10 +3379,26 @@ def orchestrate_run(args: argparse.Namespace) -> int:
         read_only = [s for s in ready if s["role"] in ORCH_READ_ONLY_ROLES]
         writers = [s for s in ready if s["role"] not in ORCH_READ_ONLY_ROLES]
         batch = read_only if read_only else writers[:1]
+        routes = {}
         for step in batch:
+            route = None
+            if agent == "codex":
+                route = resolve_codex_route(
+                    step["role"],
+                    str(manifest.get("risk", "auto")),
+                    prior_attempts=int(step["attempts"]),
+                    model=getattr(args, "codex_model", None),
+                    reasoning_effort=getattr(args, "codex_effort", None),
+                    fast=bool(getattr(args, "codex_fast", False)),
+                )
+                step["route"] = route
+            routes[step["id"]] = route
             step["status"] = "running"
             step["started_at"] = utc_now()
-            orch_ledger(root, task_id, "step-started", step=step["id"], role=step["role"], attempt=step["attempts"] + 1)
+            ledger_fields = {"step": step["id"], "role": step["role"], "attempt": step["attempts"] + 1}
+            if route:
+                ledger_fields["route"] = route
+            orch_ledger(root, task_id, "step-started", **ledger_fields)
         save_plan(root, task_id, plan)
 
         def run_one(step: dict[str, Any]) -> tuple[dict[str, Any], bool, str, str]:
@@ -2802,7 +3408,18 @@ def orchestrate_run(args: argparse.Namespace) -> int:
                     if other["role"] in {"reviewer", "security", "qa"} and other.get("verdict") and not str(other.get("verdict", "")).startswith(("VERDICT: APPROVE", "VERDICT: NO-BLOCKING", "QA: PASS")):
                         retry_context.append(f"{other['id']}: {orchestration_dir(root, task_id) / 'steps' / other['id'] / 'final.md'}")
             try:
-                output = dispatch_step(root, task_id, plan, step, agent, cwd, args.step_timeout, args.dry_run, retry_context)
+                output = dispatch_step(
+                    root,
+                    task_id,
+                    plan,
+                    step,
+                    agent,
+                    cwd,
+                    args.step_timeout,
+                    args.dry_run,
+                    retry_context,
+                    routes.get(step["id"]),
+                )
                 passed, verdict = step_gate(step, output)
                 return step, passed, verdict, ""
             except Exception as exc:
@@ -2944,7 +3561,17 @@ def orchestrate_run(args: argparse.Namespace) -> int:
         "task_id": task_id,
         "dry_run": bool(args.dry_run),
         "iterations": iterations,
-        "steps": [{"id": s["id"], "role": s["role"], "status": s["status"], "attempts": s["attempts"], "verdict": s.get("verdict")} for s in steps],
+        "steps": [
+            {
+                "id": s["id"],
+                "role": s["role"],
+                "status": s["status"],
+                "attempts": s["attempts"],
+                "verdict": s.get("verdict"),
+                **({"route": s["route"]} if s.get("route") else {}),
+            }
+            for s in steps
+        ],
         "blocked": blocked,
         "evidence_ok": evidence_ok,
         "finished": finished,
@@ -3772,6 +4399,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--no-shims", action="store_true", help="Do not install ~/.local/bin shims")
     setup_p.add_argument("--no-alias", action="store_true", help="Do not install the ah alias shim")
     setup_p.add_argument("--skip-deps", action="store_true", help="Skip npm ci in the runtime source bundle")
+    setup_p.add_argument("--toolchain", choices=["full", "none"], default="full", help="Install the portable engineering toolchain (default: full)")
+    setup_p.add_argument("--dry-run", action="store_true", help="Show setup and tool installation actions without changing files")
     setup_p.add_argument("--json", action="store_true")
     setup_p.set_defaults(func=setup)
 
@@ -3792,6 +4421,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_p.add_argument("--dry-run", action="store_true")
     uninstall_p.add_argument("--restore-adapters", action="store_true", help="Deprecated: adapters are restored by default; this flag is a harmless no-op")
     uninstall_p.add_argument("--keep-adapters", action="store_true", help="Leave managed adapter blocks, hooks, and shims in place (may break tools until removed manually)")
+    uninstall_p.add_argument("--remove-owned-tools", action="store_true", help="Also uninstall only tools recorded as installed by this harness")
     uninstall_p.add_argument("--json", action="store_true")
     uninstall_p.set_defaults(func=uninstall)
 
@@ -3813,6 +4443,7 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade_p.add_argument("--dry-run", action="store_true")
     upgrade_p.add_argument("--skip-deps", action="store_true")
     upgrade_p.add_argument("--no-adapters", action="store_true", help="Refresh runtime files only; do not re-sync user-level adapters (skills, subagents, hooks)")
+    upgrade_p.add_argument("--toolchain", choices=["full", "none"], help="Override the installed toolchain profile")
     upgrade_p.add_argument("--json", action="store_true")
     upgrade_p.set_defaults(func=upgrade)
 
@@ -3921,6 +4552,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_p = sub.add_parser("agent", help="Peer-agent lanes (capabilities | run) for cross-tool review")
     agent_sub = agent_p.add_subparsers(dest="agent_cmd", required=True)
     caps_p = agent_sub.add_parser("capabilities")
+    caps_p.add_argument("--json", action="store_true", help="Output JSON (default; accepted for consistency)")
     caps_p.set_defaults(func=agent_capabilities)
     run_p = agent_sub.add_parser("run")
     run_p.add_argument("task_id")
@@ -3929,6 +4561,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--run-id")
     run_p.add_argument("--prompt", required=True)
     run_p.add_argument("--timeout", type=int, default=120)
+    run_p.add_argument("--codex-model", choices=sorted(CODEX_ROUTE_MODELS))
+    run_p.add_argument("--codex-effort", choices=sorted(CODEX_ROUTE_EFFORTS))
+    run_p.add_argument("--codex-fast", action="store_true", help="Opt into Codex Fast credit usage for this lane")
     run_p.add_argument("--dry-run", action="store_true")
     run_p.add_argument("--json", action="store_true")
     run_p.set_defaults(func=agent_run)
@@ -4057,6 +4692,9 @@ def build_parser() -> argparse.ArgumentParser:
     op.add_argument("--agent", choices=["codex", "claude", "cursor"])
     op.add_argument("--max-steps", type=int, default=12)
     op.add_argument("--step-timeout", type=int, default=600)
+    op.add_argument("--codex-model", choices=sorted(CODEX_ROUTE_MODELS))
+    op.add_argument("--codex-effort", choices=sorted(CODEX_ROUTE_EFFORTS))
+    op.add_argument("--codex-fast", action="store_true", help="Opt into Codex Fast credit usage for the planner")
     op.add_argument("--dry-run", action="store_true")
     op.add_argument("--json", action="store_true")
     op.set_defaults(func=orchestrate_plan)
@@ -4069,6 +4707,9 @@ def build_parser() -> argparse.ArgumentParser:
     orun.add_argument("--step-timeout", type=int, default=600)
     orun.add_argument("--no-finish", action="store_true", help="Stop before finish_task even when evidence passes")
     orun.add_argument("--retry-blocked", action="store_true", help="Reset blocked/failed steps to pending and retry them (use after fixing the cause)")
+    orun.add_argument("--codex-model", choices=sorted(CODEX_ROUTE_MODELS))
+    orun.add_argument("--codex-effort", choices=sorted(CODEX_ROUTE_EFFORTS))
+    orun.add_argument("--codex-fast", action="store_true", help="Opt into Codex Fast credit usage for role steps")
     orun.add_argument("--dry-run", action="store_true")
     orun.add_argument("--json", action="store_true")
     orun.set_defaults(func=orchestrate_run)

@@ -71,7 +71,7 @@ const execFileAsync = promisify(execFile);
 const HARNESS = path.join(ROOT, "bin", "harness");
 const STATUS_DIR = path.join(ROOT, "state", "status");
 const MEMORY_INDEX = path.join(ROOT, "memory", "index.md");
-const toolNames = [
+const legacyToolNames = [
   "start_task",
   "resume_task",
   "status",
@@ -104,11 +104,37 @@ const toolNames = [
   "orchestrate_run",
   "orchestrate_status",
 ];
+const compactToolNames = [
+  "start_task",
+  "resume_task",
+  "read_artifact",
+  "write_evidence",
+  "run_check",
+  "evidence_doctor",
+  "finish_task",
+  "orchestrate_plan",
+  "orchestrate_run",
+];
+const mcpProfile = process.env.AGENT_HARNESS_MCP_PROFILE === "legacy" ? "legacy" : "compact";
+const toolNames = mcpProfile === "legacy" ? legacyToolNames : compactToolNames;
 const resourceUris = ["agent-harness://tasks/latest", "agent-harness://dashboard", "agent-harness://memory/index"];
 const promptNames = ["start-from-description", "resume-latest", "finish-with-evidence", "review-pr"];
 const taskId = z.string().regex(/^(latest|[A-Za-z0-9][A-Za-z0-9-]{0,95})$/);
 const safeText = z.string().min(1).max(256000);
 const agentName = z.enum(["codex", "claude", "cursor"]);
+const codexRouteParameters = {
+  codex_model: z.enum(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]).optional(),
+  codex_effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  codex_fast: z.boolean().optional(),
+};
+
+function codexRouteArgs(args) {
+  return [
+    ...(args.codex_model ? ["--codex-model", args.codex_model] : []),
+    ...(args.codex_effort ? ["--codex-effort", args.codex_effort] : []),
+    ...(args.codex_fast ? ["--codex-fast"] : []),
+  ];
+}
 
 const defaultPatterns = [
   "gh[pousr]_[0-9A-Za-z_]{24,}",
@@ -199,6 +225,10 @@ const server = new FastMCP({
   instructions: "Local agent harness control plane. Use task packets, generated profiles, evidence, review lanes, and write intents. Do not use this server as a generic shell.",
   roots: { enabled: false },
 });
+const addTool = server.addTool.bind(server);
+server.addTool = (definition) => {
+  if (toolNames.includes(definition.name)) addTool(definition);
+};
 
 server.addTool({
   name: "start_task",
@@ -305,8 +335,8 @@ server.addTool({ name: "agent_capabilities", description: "List peer agent CLI a
 server.addTool({
   name: "agent_run",
   description: "Run or dry-run a bounded peer agent lane.",
-  parameters: z.object({ task_id: taskId, agent: agentName, role: z.string().optional(), prompt: safeText, dry_run: z.boolean().optional(), timeout: z.number().int().min(10).max(1800).optional() }),
-  execute: async (args) => runHarness(["agent", "run", args.task_id, "--agent", args.agent, "--role", args.role || "reviewer", "--prompt", args.prompt, "--timeout", String(args.timeout || 120), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: (args.timeout || 120) * 1000 + 10000 }),
+  parameters: z.object({ task_id: taskId, agent: agentName, role: z.string().optional(), prompt: safeText, dry_run: z.boolean().optional(), timeout: z.number().int().min(10).max(1800).optional(), ...codexRouteParameters }),
+  execute: async (args) => runHarness(["agent", "run", args.task_id, "--agent", args.agent, "--role", args.role || "reviewer", "--prompt", args.prompt, "--timeout", String(args.timeout || 120), ...codexRouteArgs(args), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: (args.timeout || 120) * 1000 + 10000 }),
 });
 
 server.addTool({ name: "review_plan", description: "Create a review plan for a task.", parameters: z.object({ task_id: taskId.optional() }), execute: async (args) => runHarness(["review", "plan", args.task_id || "latest"], { json: true }) });
@@ -336,20 +366,20 @@ server.addTool({
 server.addTool({
   name: "orchestrate_plan",
   description: "Decompose a harness task into a role-based step plan (planner agent with deterministic fallback). Steps: researcher/worker/qa/reviewer/security/synthesizer.",
-  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_steps: z.number().int().min(3).max(24).optional(), dry_run: z.boolean().optional() }),
-  execute: async (args) => runHarness(["orchestrate", "plan", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_steps ? ["--max-steps", String(args.max_steps)] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 900000 }),
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_steps: z.number().int().min(3).max(24).optional(), dry_run: z.boolean().optional(), ...codexRouteParameters }),
+  execute: async (args) => runHarness(["orchestrate", "plan", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), ...(args.max_steps ? ["--max-steps", String(args.max_steps)] : []), ...codexRouteArgs(args), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs: 900000 }),
 });
 server.addTool({
   name: "orchestrate_run",
   description: "Run the orchestration plan autonomously: gated role steps (QA must PASS, reviewer must APPROVE, security must clear), bounded fix loops, then evidence and finish. Long-running.",
-  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), step_timeout: z.number().int().min(30).max(3600).optional(), retry_blocked: z.boolean().optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional() }),
+  parameters: z.object({ task_id: taskId.optional(), agent: agentName.optional(), max_iterations: z.number().int().min(1).max(100).optional(), max_attempts: z.number().int().min(1).max(5).optional(), step_timeout: z.number().int().min(30).max(3600).optional(), retry_blocked: z.boolean().optional(), no_finish: z.boolean().optional(), dry_run: z.boolean().optional(), ...codexRouteParameters }),
   execute: async (args) => {
     const maxIterations = args.max_iterations || 20;
     const stepTimeout = args.step_timeout || 600;
     // Size the outer timeout from the conductor's worst case so the MCP layer
     // never kills a live run (which would orphan an agent and double-dispatch on retry).
     const timeoutMs = maxIterations * stepTimeout * 1000 + 120000;
-    return runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), "--max-iterations", String(maxIterations), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), "--step-timeout", String(stepTimeout), ...(args.retry_blocked ? ["--retry-blocked"] : []), ...(args.no_finish ? ["--no-finish"] : []), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs });
+    return runHarness(["orchestrate", "run", args.task_id || "latest", ...(args.agent ? ["--agent", args.agent] : []), "--max-iterations", String(maxIterations), ...(args.max_attempts ? ["--max-attempts", String(args.max_attempts)] : []), "--step-timeout", String(stepTimeout), ...(args.retry_blocked ? ["--retry-blocked"] : []), ...(args.no_finish ? ["--no-finish"] : []), ...codexRouteArgs(args), ...(args.dry_run ? ["--dry-run"] : []), "--json"], { json: true, timeoutMs });
   },
 });
 server.addTool({
@@ -370,7 +400,7 @@ server.addPrompt({ name: "review-pr", description: "Review a PR through the draf
 
 if (process.argv.includes("--self-test")) {
   const envProbe = scrubbedEnv();
-  console.log(JSON.stringify({ name: "agent-harness", version: VERSION, tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
+  console.log(JSON.stringify({ name: "agent-harness", version: VERSION, profile: mcpProfile, tools: toolNames, resources: resourceUris, prompts: promptNames, redaction_patterns_nonempty: redactionPatterns.length > 0, env_scrub: { root_set: envProbe.AGENT_HARNESS_ROOT === ROOT } }, null, 2));
 } else {
   server.start({ transportType: "stdio" });
 }
