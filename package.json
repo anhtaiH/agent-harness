@@ -11,6 +11,7 @@
     "runtime/bin/*",
     "runtime/hooks/*.py",
     "runtime/instructions/*.md",
+    "runtime/lazy-playwright/*.json",
     "runtime/mcp/*.mjs",
     "runtime/mcp/*.ts",
     "runtime/policy/*.json",

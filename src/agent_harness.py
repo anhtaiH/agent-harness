@@ -10,7 +10,6 @@ memory inboxes, and local metrics.
 from __future__ import annotations
 
 import argparse
-import base64
 import concurrent.futures
 import contextlib
 from datetime import datetime, timedelta, timezone
@@ -45,7 +44,6 @@ DEFAULT_RUNTIME_ROOT = Path.home() / ".agent-harness" / DEFAULT_WORKSPACE
 PACKAGE_VERSION = "0.3.0"
 RELEASE_REF = "v0.3.0"
 PLAYWRIGHT_PACKAGE = "@playwright/mcp@0.0.79"
-PLAYWRIGHT_INTEGRITY = "sha512-VpqD4a3vFyGQMY9sh3UJiO6wjcurggkljKfAyCHL0QWGY5m6Ehr3MNsAAHPDHO//n13g0PCjpHatAOiulrqdZQ=="
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,95}$")
 SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]{0,199}$")
 RISK_LEVELS = {"auto", "green", "yellow", "red", "low", "medium", "high", "critical"}
@@ -388,37 +386,41 @@ def npm_client_env(**values: str) -> dict[str, str]:
     return package_client_env(**config)
 
 
-def verify_sri(path: Path, expected: str) -> bool:
-    algorithm, separator, encoded = expected.partition("-")
-    if separator != "-" or algorithm != "sha512" or not encoded:
-        return False
-    actual = base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
-    return actual == encoded
+def validate_playwright_lock(lock: dict[str, Any]) -> None:
+    packages = lock.get("packages", {})
+    top = packages.get("node_modules/@playwright/mcp", {})
+    if top.get("version") != PLAYWRIGHT_PACKAGE.rsplit("@", 1)[1]:
+        raise HarnessError("Playwright lock does not match the pinned package")
+    for name, record in packages.items():
+        if name.startswith("node_modules/") and not record.get("link"):
+            integrity = record.get("integrity", "")
+            if not integrity.startswith("sha512-"):
+                raise HarnessError(f"Playwright lock entry lacks SHA-512 integrity: {name}")
 
 
 def playwright(args: argparse.Namespace) -> int:
     npm = shutil.which("npm")
-    if not npm:
-        raise HarnessError("Playwright requires npm on PATH")
+    node = shutil.which("node")
+    if not npm or not node:
+        raise HarnessError("Playwright requires node and npm on PATH")
+    source = SOURCE_ROOT / "runtime" / "lazy-playwright"
+    lock = load_json(source / "package-lock.json", {})
+    validate_playwright_lock(lock)
     with tempfile.TemporaryDirectory(prefix="agent-harness-playwright-") as temp:
         root = Path(temp)
+        shutil.copy2(source / "package.json", root / "package.json")
+        shutil.copy2(source / "package-lock.json", root / "package-lock.json")
         env = npm_client_env(npm_config_cache=str(root / "npm-cache"))
-        packed = run_text(
-            [npm, "pack", PLAYWRIGHT_PACKAGE, "--pack-destination", str(root), "--json"],
+        installed = run_text(
+            [npm, "ci", "--omit=dev", "--ignore-scripts"],
             timeout=300,
             env=env,
+            cwd=root,
         )
-        if packed.returncode != 0:
-            raise HarnessError(f"Unable to fetch pinned Playwright MCP: {packed.stderr.strip()}")
-        try:
-            record = json.loads(packed.stdout)[0]
-            tarball = root / record["filename"]
-        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise HarnessError("npm returned an invalid Playwright package receipt") from exc
-        if not tarball.is_file() or not verify_sri(tarball, PLAYWRIGHT_INTEGRITY):
-            raise HarnessError("Pinned Playwright MCP integrity verification failed")
+        if installed.returncode != 0:
+            raise HarnessError(f"Unable to install integrity-locked Playwright MCP: {installed.stderr.strip()}")
         forwarded = args.playwright_args[1:] if args.playwright_args[:1] == ["--"] else args.playwright_args
-        command = [npm, "exec", "--yes", "--package", str(tarball), "--", "playwright-mcp", *forwarded]
+        command = [node, str(root / "node_modules" / "@playwright" / "mcp" / "cli.js"), *forwarded]
         return subprocess.run(command, env=env, check=False).returncode
 
 

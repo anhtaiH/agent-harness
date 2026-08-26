@@ -25,7 +25,7 @@ Notes:
 - The `--json` result is your ground truth. Do not claim success unless `"ok": true`.
 - The default `--toolchain full` installs Git, ripgrep, ugrep, fd, ast-grep, jq, yq, GitHub CLI, uv, rtk, pinned Semble/Serena/Headroom, and credential-free Context7 configuration. Use `--toolchain none` only when the human explicitly wants to retain their own toolchain.
 - Package clients receive a minimal credential-free environment. npm lifecycle scripts and automatic Python downloads are disabled; Python tools are exact-version/time-bounded, wheel-only except Serena's `proxy-tools` dependency, whose exact source URL and SHA-256 are pinned in the shipped override.
-- Playwright stays lazy to avoid permanent MCP context. For browser work, run `agent-harness playwright -- <playwright-mcp args>`; Harness fetches `@playwright/mcp@0.0.79`, verifies its pinned SHA-512, and only then executes the local tarball with npm lifecycle scripts disabled.
+- Playwright stays lazy to avoid permanent MCP context. For browser work, run `agent-harness playwright -- <playwright-mcp args>`; Harness installs the complete `@playwright/mcp@0.0.79` graph from its shipped integrity lock with npm lifecycle scripts disabled, then executes the locked local CLI directly.
 - If dependency install fails, the JSON includes `fix` and `retry` fields; follow them (`--skip-deps` is a degraded CLI-only fallback — report it as such).
 - Setup auto-detects installed tools (Claude Code, Codex, Cursor, opencode, pi) and only writes adapters for the ones present. It never overwrites unmanaged user config; conflicts are reported as `skipped` with a reason and a manual snippet under `<runtime>/state/adapter-snippets/`.
 

@@ -149,18 +149,19 @@ class AgentHarnessRegressionTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["npm_config_userconfig"], os.devnull)
         self.assertTrue(run.call_args.kwargs["env"]["npm_config_globalconfig"].endswith("/empty-global.npmrc"))
 
-    def test_playwright_pin_and_integrity_are_enforced(self):
-        payload = self.root / "playwright.tgz"
-        payload.write_bytes(b"verified-playwright")
-        expected = "sha512-" + agent_harness.base64.b64encode(
-            hashlib.sha512(payload.read_bytes()).digest()
-        ).decode()
-        self.assertTrue(agent_harness.verify_sri(payload, expected))
-        self.assertFalse(agent_harness.verify_sri(payload, expected[:-1] + "A"))
+    def test_playwright_dependency_lock_integrity_is_enforced(self):
+        lock = agent_harness.load_json(
+            PROJECT_ROOT / "runtime" / "lazy-playwright" / "package-lock.json", {}
+        )
+        agent_harness.validate_playwright_lock(lock)
+        tampered = json.loads(json.dumps(lock))
+        del tampered["packages"]["node_modules/playwright-core"]["integrity"]
+        with self.assertRaisesRegex(agent_harness.HarnessError, "lacks SHA-512"):
+            agent_harness.validate_playwright_lock(tampered)
         manifest = agent_harness.load_toolchain_manifest(PROJECT_ROOT)
         playwright = next(item for item in manifest["lazy_mcp"] if item["id"] == "playwright")
-        self.assertEqual(playwright["args"][-1], agent_harness.PLAYWRIGHT_PACKAGE)
-        self.assertEqual(playwright["integrity"], agent_harness.PLAYWRIGHT_INTEGRITY)
+        self.assertEqual(playwright["args"], ["playwright", "--"])
+        self.assertEqual(playwright["lock"], "runtime/lazy-playwright/package-lock.json")
 
     def test_package_client_environment_drops_registry_credentials(self):
         with patch.dict(

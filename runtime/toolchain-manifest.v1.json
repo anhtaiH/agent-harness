@@ -22,6 +22,6 @@
     {"id": "context7", "url": "https://mcp.context7.com/mcp", "authentication": "optional"}
   ],
   "lazy_mcp": [
-    {"id": "playwright", "command": "npx", "args": ["--yes", "@playwright/mcp@0.0.79"], "integrity": "sha512-VpqD4a3vFyGQMY9sh3UJiO6wjcurggkljKfAyCHL0QWGY5m6Ehr3MNsAAHPDHO//n13g0PCjpHatAOiulrqdZQ=="}
+    {"id": "playwright", "command": "agent-harness", "args": ["playwright", "--"], "lock": "runtime/lazy-playwright/package-lock.json"}
   ]
 }

@@ -1,0 +1,8 @@
+{
+  "name": "agent-harness-lazy-playwright",
+  "private": true,
+  "version": "0.3.0",
+  "dependencies": {
+    "@playwright/mcp": "0.0.79"
+  }
+}
