@@ -2562,6 +2562,7 @@ def run_check(args: argparse.Namespace) -> int:
     cwd = task_execution_cwd(manifest, repo)
     child_env = os.environ.copy()
     child_env.pop("AGENT_HARNESS_ROOT", None)
+    child_env.pop("AGENT_HARNESS_SOURCE", None)
     result = run_text(command, cwd=cwd, timeout=args.timeout, env=child_env)
     output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
     record = record_check(root, task_id, shlex.join(command), result.returncode, output)

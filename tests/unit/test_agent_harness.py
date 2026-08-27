@@ -332,14 +332,19 @@ class AgentHarnessRegressionTests(unittest.TestCase):
             command=[
                 sys.executable,
                 "-c",
-                "import os,sys; sys.exit(7 if 'AGENT_HARNESS_ROOT' in os.environ else 0)",
+                "import os,sys; sys.exit(7 if "
+                "{'AGENT_HARNESS_ROOT', 'AGENT_HARNESS_SOURCE'} & os.environ.keys() else 0)",
             ],
             timeout=30,
             json=True,
         )
 
         with patch.dict(
-            os.environ, {"AGENT_HARNESS_ROOT": "/unexpected/parent/runtime"}
+            os.environ,
+            {
+                "AGENT_HARNESS_ROOT": "/unexpected/parent/runtime",
+                "AGENT_HARNESS_SOURCE": "/unexpected/parent/source",
+            },
         ):
             result = agent_harness.run_check(args)
 
