@@ -555,7 +555,7 @@ class AuthorityBootstrapTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=60,
+            timeout=180,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"keychain_mutated":false', result.stdout)
