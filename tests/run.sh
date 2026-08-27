@@ -28,7 +28,9 @@ PYTHON_REAL="$(
   python_binding_error "AGENT_HARNESS_PYTHON must be its canonical real path"
 
 python_identity() {
-  if /usr/bin/stat -f '%d:%i' "$AGENT_HARNESS_PYTHON" 2>/dev/null; then
+  local identity
+  if identity="$(/usr/bin/stat -f '%d:%i' "$AGENT_HARNESS_PYTHON" 2>/dev/null)"; then
+    printf '%s\n' "$identity"
     return
   fi
   /usr/bin/stat -Lc '%d:%i' "$AGENT_HARNESS_PYTHON" 2>/dev/null
@@ -158,7 +160,7 @@ echo "$orch_plan_out" | grep -q '"model": "gpt-5.6-sol"'  # planner route is obs
 AGENT_HARNESS_ORCH_DRYRUN_FINISH=1 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-task --dry-run --json | grep -q '"finished": true'
 test -f "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
 grep -q "run-complete" "$RUNTIME/tasks/orch-task/orchestration/ledger.jsonl"
-"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate status orch-task | grep -q '"plan"'
+"$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate status orch-task | grep '"plan"' >/dev/null
 # A plain dry run is a rehearsal: it must NOT finish or write the real evidence.md
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Rehearsal task" --task-id orch-rehearse --risk green --mode run --json >/dev/null
 rehearse_out="$("$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" orchestrate run orch-rehearse --dry-run --json)"

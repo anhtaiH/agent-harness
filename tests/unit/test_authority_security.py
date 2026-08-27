@@ -958,6 +958,7 @@ print(json.dumps({{
                 pin,
             )
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS native broker")
     def test_native_core_bootstrap_installs_fixed_control_authority(self):
         root = Path(__file__).resolve().parents[2]
         result = subprocess.run(
