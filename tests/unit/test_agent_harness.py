@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -350,6 +352,50 @@ class AgentHarnessRegressionTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertTrue(agent_harness.load_checks(runtime, "env-check")[-1]["passed"])
+
+    def test_run_check_failure_displays_stdout_and_stderr(self):
+        runtime = self.root / "runtime"
+        repo = self.root / "repo"
+        repo.mkdir()
+        agent_harness.ensure_runtime_dirs(runtime)
+        agent_harness.write_json(
+            runtime / "config.json", {"workspace": "test", "repos": {}}
+        )
+        task = agent_harness.task_dir(runtime, "failed-check")
+        task.mkdir()
+        agent_harness.write_json(
+            task / "task.json", {"repo_path": str(repo), "worktree": ""}
+        )
+        args = argparse.Namespace(
+            runtime_root=str(runtime),
+            task_id="failed-check",
+            command=[
+                sys.executable,
+                "-c",
+                "import os,sys; print(os.environ['CHECK_STDOUT']); "
+                "print(os.environ['CHECK_STDERR'], file=sys.stderr); sys.exit(3)",
+            ],
+            timeout=30,
+            json=False,
+        )
+        output = io.StringIO()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CHECK_STDOUT": "captured standard output",
+                    "CHECK_STDERR": "captured standard error",
+                },
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = agent_harness.run_check(args)
+
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] rc=3", output.getvalue())
+        self.assertIn("captured standard output", output.getvalue())
+        self.assertIn("captured standard error", output.getvalue())
 
     def test_agent_capabilities_accepts_json_for_cli_consistency(self):
         result = subprocess.run(

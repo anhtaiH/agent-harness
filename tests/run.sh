@@ -105,7 +105,7 @@ fi
 npm exec --yes --package "$ROOT" -- agent-harness setup --workspace demo --repo "$REPO" --runtime-root "$RUNTIME" --shim-dir "$TMP_DIR/bin" --yes --no-register --toolchain none --json >/dev/null
 test -x "$RUNTIME/source/agent-harness/bin/agent-harness"
 grep -q "source/agent-harness" "$RUNTIME/bin/harness"
-"$RUNTIME/bin/harness" doctor --json >/dev/null
+"$RUNTIME/bin/harness" doctor --json
 "$RUNTIME/bin/harness" verify-gates --json | grep -q '"ok": true'
 
 # Hook-root derivation: a hook invoked with NO AGENT_HARNESS_ROOT env must read
@@ -128,7 +128,7 @@ hook_out="$(env -u AGENT_HARNESS_ROOT "$AGENT_HARNESS_PYTHON" "$RUNTIME/hooks/st
 JSON
 )" || true
 echo "$hook_out" | grep -q "hookroot-probe" || { echo "stop hook did not derive its runtime root from __file__" >&2; exit 1; }
-"$TMP_DIR/bin/agent-harness" doctor --json >/dev/null
+"$TMP_DIR/bin/agent-harness" doctor --json
 "$TMP_DIR/bin/agent-harness" where --runtime-root "$RUNTIME" --json >/dev/null
 "$TMP_DIR/bin/ah" examples >/dev/null
 "$ROOT/bin/agent-harness" --runtime-root "$RUNTIME" start demo --prompt "Inspect the sample repo" --task-id sample-task --risk green --mode run --json >/dev/null

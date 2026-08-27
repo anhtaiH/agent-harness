@@ -2572,7 +2572,7 @@ def run_check(args: argparse.Namespace) -> int:
     else:
         print(f"[{'PASS' if record['passed'] else 'FAIL'}] rc={record['returncode']}: {record['command']}")
         if not record["passed"]:
-            print(result.stdout[-1500:] or result.stderr[-1500:])
+            print(record["output_tail"])
     return 0 if record["passed"] else 1
 
 
