@@ -22,7 +22,7 @@ class WrapperPortabilityTests(unittest.TestCase):
         fake_bin.mkdir()
         for _, executable in WRAPPERS:
             path = fake_bin / executable
-            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\"\n", encoding="utf-8")
             path.chmod(0o755)
         self.env = os.environ.copy()
         self.env.update({"HOME": str(root / "home"), "PATH": f"{fake_bin}:/usr/bin:/bin"})
@@ -46,7 +46,7 @@ class WrapperPortabilityTests(unittest.TestCase):
         )
 
     def test_task_bound_wrappers_accept_no_forwarded_arguments(self):
-        for wrapper, _ in WRAPPERS:
+        for wrapper, executable in WRAPPERS:
             for mode in ("run", "plan", "yolo"):
                 with self.subTest(wrapper=wrapper, mode=mode):
                     result = self.run_wrapper(
@@ -57,6 +57,10 @@ class WrapperPortabilityTests(unittest.TestCase):
                         mode,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        pathlib.Path(result.stdout.strip()).name,
+                        executable,
+                    )
 
     def test_wrappers_without_task_report_task_requirement(self):
         for wrapper, _ in WRAPPERS:
