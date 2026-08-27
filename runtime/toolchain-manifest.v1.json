@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "profile": "full",
+  "system_tools": [
+    {"id": "git", "executables": ["git"], "packages": {"brew": "git", "apt-get": "git", "dnf": "git", "pacman": "git", "apk": "git"}},
+    {"id": "ripgrep", "executables": ["rg"], "packages": {"brew": "ripgrep", "apt-get": "ripgrep", "dnf": "ripgrep", "pacman": "ripgrep", "apk": "ripgrep"}},
+    {"id": "ugrep", "executables": ["ugrep"], "packages": {"brew": "ugrep", "apt-get": "ugrep", "dnf": "ugrep", "pacman": "ugrep", "apk": "ugrep"}},
+    {"id": "fd", "executables": ["fd", "fdfind"], "packages": {"brew": "fd", "apt-get": "fd-find", "dnf": "fd-find", "pacman": "fd", "apk": "fd"}},
+    {"id": "ast-grep", "executables": ["ast-grep", "sg"], "packages": {"brew": "ast-grep", "pacman": "ast-grep"}, "fallback": {"kind": "npm-prefix", "package": "@ast-grep/cli@0.45.2"}},
+    {"id": "jq", "executables": ["jq"], "packages": {"brew": "jq", "apt-get": "jq", "dnf": "jq", "pacman": "jq", "apk": "jq"}},
+    {"id": "yq", "executables": ["yq"], "packages": {"brew": "yq", "dnf": "yq", "pacman": "yq", "apk": "yq"}, "fallback": {"kind": "binary", "version": "4.53.2", "assets": {"darwin-arm64": {"url": "https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_darwin_arm64", "sha256": "541ba2287560df70f561955e2d7f7e1cd00cf2a15a884f6b5c87a4bfa887bc07"}, "darwin-x86_64": {"url": "https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_darwin_amd64", "sha256": "616b0a0f6a5b79d746f05a169c2b9bb40dee00c605ef165b9a1c1681bba738ac"}, "linux-arm64": {"url": "https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_arm64", "sha256": "03061b2a50c7a498de2bbb92d7cb078ce433011f085a4994117c2726be4106ea"}, "linux-x86_64": {"url": "https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64", "sha256": "d56bf5c6819e8e696340c312bd70f849dc1678a7cda9c2ad63eebd906371d56b"}}}},
+    {"id": "gh", "executables": ["gh"], "packages": {"brew": "gh", "apt-get": "gh", "dnf": "gh", "pacman": "github-cli", "apk": "github-cli"}},
+    {"id": "uv", "executables": ["uv"], "packages": {"brew": "uv", "pacman": "uv"}, "fallback": {"kind": "pip-user", "package": "uv==0.12.6"}},
+    {"id": "rtk", "executables": ["rtk"], "packages": {"brew": "rtk"}, "fallback": {"kind": "archive", "version": "0.46.0", "assets": {"darwin-arm64": {"url": "https://github.com/rtk-ai/rtk/releases/download/v0.46.0/rtk-aarch64-apple-darwin.tar.gz", "sha256": "484e5dd2b4bfdbbb910727a0ba1e2d63b2e23efa922cfcc7300fd131bca3e10a"}, "darwin-x86_64": {"url": "https://github.com/rtk-ai/rtk/releases/download/v0.46.0/rtk-x86_64-apple-darwin.tar.gz", "sha256": "67eb651fa9cfc4a4ea65876242eb71b8837abdac40521d0dd363214ec1a068dd"}, "linux-arm64": {"url": "https://github.com/rtk-ai/rtk/releases/download/v0.46.0/rtk-aarch64-unknown-linux-gnu.tar.gz", "sha256": "e8c2e1787f46017ea7c5a711b2bc6a7f7cf61c7ad69385b4c1e4daff1135dcd1"}, "linux-x86_64": {"url": "https://github.com/rtk-ai/rtk/releases/download/v0.46.0/rtk-x86_64-unknown-linux-musl.tar.gz", "sha256": "79aa5b89c69566bbfeceb66c8a27cfbe52237fc7ee3e683115f43745a3262d21"}}}}
+  ],
+  "uv_tools": [
+    {"id": "semble", "executables": ["semble"], "package": "semble==0.3.3", "exclude_newer": "2026-08-26T00:00:00Z"},
+    {"id": "serena", "executables": ["serena"], "package": "serena-agent==1.5.3", "exclude_newer": "2026-08-26T00:00:00Z", "overrides": "runtime/toolchain-overrides/serena.txt", "verified_source_build": true},
+    {"id": "headroom", "executables": ["headroom"], "package": "headroom-ai==0.32.1", "exclude_newer": "2026-08-26T00:00:00Z"}
+  ],
+  "remote_mcp": [
+    {"id": "context7", "url": "https://mcp.context7.com/mcp", "authentication": "optional"}
+  ],
+  "lazy_mcp": [
+    {"id": "playwright", "command": "agent-harness", "args": ["playwright", "--"], "lock": "runtime/lazy-playwright/package-lock.json"}
+  ]
+}

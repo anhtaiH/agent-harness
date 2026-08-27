@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/workspace-manifest.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "workspace", "source_commit", "source_content_identity", "runtime_root", "rollback_root", "generation"],
+  "properties": {
+    "schema": {"const": "agent-harness/workspace-manifest"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "workspace": {"type": "string", "minLength": 1},
+    "source_commit": {"type": "string", "minLength": 40},
+    "source_content_identity": {"type": ["object", "string"]},
+    "runtime_root": {"type": "string", "pattern": "^/"},
+    "rollback_root": {"type": "string", "pattern": "^/"},
+    "generation": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": true
+}

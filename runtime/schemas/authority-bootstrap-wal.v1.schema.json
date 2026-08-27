@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/authority-bootstrap-wal.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "locators", "broker_code_identity", "creator_id", "item_attributes", "conditional_inverses", "bootstrap_digest", "pending_plan_commitment", "wal_locator", "wal_digest", "phase", "broker_signature"],
+  "properties": {
+    "schema": {"const": "agent-harness/authority-bootstrap-wal"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "locators": {"type": "object"},
+    "broker_code_identity": {"type": "string", "minLength": 1},
+    "creator_id": {"type": "string", "minLength": 1},
+    "item_attributes": {"type": "object"},
+    "conditional_inverses": {"type": "array", "items": {"type": "object"}},
+    "bootstrap_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pending_plan_commitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "wal_locator": {"type": "string", "pattern": "^/"},
+    "wal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "phase": {"type": "string", "minLength": 1},
+    "broker_signature": {"type": ["string", "null"], "minLength": 1},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

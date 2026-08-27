@@ -4,7 +4,7 @@ Agent Harness tracks public harness-engineering practice. Last refreshed: July 2
 
 ## Instruction files: AGENTS.md convergence
 
-AGENTS.md is the cross-tool instruction standard (stewarded by the Agentic AI Foundation under the Linux Foundation; adopted by Codex, Cursor, Gemini CLI, opencode, Zed, Copilot, and ~20 more). Claude Code still reads CLAUDE.md rather than AGENTS.md, so the harness renders one shared instruction body into each tool's native location (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.config/opencode/AGENTS.md`, `~/.pi/agent/APPEND_SYSTEM.md`, `.cursor/rules/*.mdc`) as marker-delimited managed blocks.
+AGENTS.md is the cross-tool instruction standard (stewarded by the Agentic AI Foundation under the Linux Foundation; adopted by Codex, Cursor, Gemini CLI, opencode, Zed, Copilot, and ~20 more). Claude Code still reads CLAUDE.md rather than AGENTS.md, so the harness renders one shared instruction body into each tool's native location (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.config/opencode/AGENTS.md`, `~/.pi/agent/APPEND_SYSTEM.md`, `~/.cursor/rules/agent-harness.mdc`) as marker-delimited or managed content.
 
 Evidence on content: short root files win. HumanLayer recommends <300 lines with progressive disclosure; Augment's evals found 100-150-line instruction files plus on-demand reference docs outperform long files, and architecture over-description reduces completeness. The harness keeps its managed block ~10 lines and points to the long-form runtime instructions.
 
@@ -14,7 +14,7 @@ Evidence on content: short root files win. HumanLayer recommends <300 lines with
 
 ## Gates as hooks, not prose
 
-The deployed pattern for guardrails is native hook wiring, not instruction text: Claude Code hooks (`PreToolUse` with `permissionDecision: allow|ask|deny`, `UserPromptSubmit`, `Stop` with `stop_hook_active` loop guards, `SessionStart` context injection), Cursor `hooks.json` (`beforeShellExecution`/`beforeMCPExecution` returning `{"permission": ...}`), opencode plugins (`tool.execute.before`), and pi extensions (blockable `tool_call`). Reference deployments: Anthropic's bash-command validator example, tdd-guard, sensitive-canary (UserPromptSubmit secret blocking), git-guard. The harness ships one Python policy engine and bridges it into each surface, then proves behavior with `verify-gates`.
+The deployed pattern for guardrails is native hook wiring, not instruction text: Claude Code hooks (`PreToolUse` with `permissionDecision: allow|ask|deny`, `UserPromptSubmit`, `Stop` with `stop_hook_active` loop guards, `SessionStart` context injection), one Cursor `hooks.json` `preToolUse` bridge, opencode plugins (`tool.execute.before`), and pi extensions (blockable `tool_call`). Reference deployments: Anthropic's bash-command validator example, tdd-guard, sensitive-canary (UserPromptSubmit secret blocking), git-guard. The harness ships one Python policy engine and bridges it into each surface, then proves behavior with `verify-gates`.
 
 - https://code.claude.com/docs/en/hooks
 - https://cursor.com/docs/agent/hooks

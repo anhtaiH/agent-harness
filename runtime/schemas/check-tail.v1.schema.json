@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/check-tail.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "task_id", "task_version", "expected_sequence", "expected_record_hash", "checkpoint_generation", "mac"],
+  "properties": {
+    "schema": {"const": "agent-harness/check-tail"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "task_id": {"type": "string", "minLength": 1},
+    "task_version": {"type": "integer", "minimum": 1},
+    "expected_sequence": {"type": "integer", "minimum": 0},
+    "expected_record_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checkpoint_generation": {"type": "integer", "minimum": 0},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

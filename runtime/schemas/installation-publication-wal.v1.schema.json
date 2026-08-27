@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/installation-publication-wal.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "prior_generation", "prior_index_digest", "new_generation", "new_index_digest", "transaction_digest", "plan_digest", "prepared_receipts", "phase", "mac"],
+  "properties": {
+    "schema": {"const": "agent-harness/installation-publication-wal"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "prior_generation": {"type": "integer", "minimum": 0},
+    "prior_index_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "new_generation": {"type": "integer", "minimum": 1},
+    "new_index_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "transaction_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prepared_receipts": {"type": "array", "items": {"type": "object"}},
+    "phase": {"type": "string", "minLength": 1},
+    "mac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

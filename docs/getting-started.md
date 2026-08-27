@@ -5,18 +5,18 @@
 The recommended path: let your coding agent install it. Paste into Claude Code, Codex, Cursor, opencode, or pi (a session with shell access):
 
 ```text
-Read https://raw.githubusercontent.com/anhtaiH/agent-harness/main/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Report doctor --json and verify-gates --json results when done.
+Read https://raw.githubusercontent.com/anhtaiH/agent-harness/v0.3.0/INSTALL.md and follow it exactly to install the Agent Harness for the repo we are in. Report doctor --json and verify-gates --json results when done.
 ```
 
 Or run it yourself from the repo you want agents to work on:
 
 ```bash
-npx --yes github:anhtaiH/agent-harness setup
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 setup
 ```
 
 Use `--yes` for unattended setup. Use `--workspace <name>` when one machine has multiple projects.
 
-Setup creates a local runtime, detects installed tools (Claude Code, Codex, Cursor, opencode, pi), wires policy gates into each tool's native hook system, installs skills/subagents where supported, registers MCP, installs shims, generates a local profile, and runs `doctor`.
+Setup creates a local runtime, installs the portable credential-free CLI/MCP toolchain, detects installed clients (Claude Code, Codex, Cursor, opencode, pi), wires policy gates into each tool's native hook system, installs skills/subagents where supported, registers compact MCP, installs shims, generates a local profile, and runs `doctor`. Preview with `setup --dry-run --json`; opt out of tool installation with `--toolchain none`.
 
 After a successful setup, open your agent in the repo and ask for work in natural language. You should not need to paste runtime paths into the agent.
 
@@ -56,8 +56,9 @@ agent-harness open
 ## 4. Upgrade Or Remove
 
 ```bash
-agent-harness upgrade
-agent-harness uninstall --restore-adapters
+env npm_config_ignore_scripts=true npx --yes github:anhtaiH/agent-harness#v0.3.0 upgrade
+agent-harness uninstall
+agent-harness uninstall --remove-owned-tools # explicit receipt-owned tool removal
 ```
 
 Uninstall removes the local runtime, managed shims, and managed app-adapter blocks. It does not edit tracked project files.

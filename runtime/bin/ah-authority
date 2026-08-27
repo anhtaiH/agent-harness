@@ -1,0 +1,319 @@
+#!/bin/bash
+set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+umask 077
+
+ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+SOURCE="$ROOT/runtime/authority/macos-broker.swift"
+CURRENT_UID="$(/usr/bin/id -u)"
+SWIFTC="$(/usr/bin/xcrun --find swiftc)"
+SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+SDK_VERSION="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+SDK_MAJOR="${SDK_VERSION%%.*}"
+ARCH="$(/usr/bin/uname -m)"
+
+authority_error() {
+  echo "$1" >&2
+  exit 1
+}
+
+stable_digest() {
+  local target="$1"
+  local before
+  local after
+  local digest
+  [ -f "$target" ] && [ ! -L "$target" ] ||
+    authority_error "native authority input must be a regular file"
+  before="$(/usr/bin/stat -f '%HT|%u|%Lp|%d|%i' "$target")"
+  digest="$(/usr/bin/shasum -a 256 "$target" |
+    /usr/bin/awk '{print $1}')"
+  after="$(/usr/bin/stat -f '%HT|%u|%Lp|%d|%i' "$target")"
+  [ "$before" = "$after" ] ||
+    authority_error "native authority input changed while hashing"
+  printf '%s\n' "$digest"
+}
+
+require_directory() {
+  local target="$1"
+  local metadata
+  [ -d "$target" ] && [ ! -L "$target" ] || return 1
+  metadata="$(/usr/bin/stat -f '%HT|%u|%Lp' "$target")"
+  [ "$metadata" = "Directory|$CURRENT_UID|700" ]
+}
+
+require_role() {
+  local target="$1"
+  local metadata
+  [ -f "$target" ] && [ ! -L "$target" ] || return 1
+  metadata="$(/usr/bin/stat -f '%HT|%u|%Lp' "$target")"
+  [ "$metadata" = "Regular File|$CURRENT_UID|500" ] &&
+    /usr/bin/codesign --verify --strict "$target" 2>/dev/null
+}
+
+plist_create() {
+  local path="$1"
+  local identifier="$2"
+  /usr/bin/plutil -create xml1 "$path"
+  /usr/bin/plutil -insert CFBundleIdentifier \
+    -string "$identifier" "$path"
+}
+
+compile_role() {
+  local role_flag="$1"
+  local provider_flag="$2"
+  local info_plist="$3"
+  local output="$4"
+  local module_cache="$5"
+  SWIFT_MODULECACHE_PATH="$module_cache/swift" \
+    CLANG_MODULE_CACHE_PATH="$module_cache/clang" \
+    "$SWIFTC" -sdk "$SDK" \
+      -target "$ARCH-apple-macosx${SDK_MAJOR}.0" \
+      "-D$role_flag" \
+      "-D$provider_flag" \
+      "$SOURCE" \
+      -Xlinker -sectcreate \
+      -Xlinker __TEXT \
+      -Xlinker __info_plist \
+      -Xlinker "$info_plist" \
+      -o "$output"
+}
+
+designated_requirement() {
+  /usr/bin/codesign -d -r- "$1" 2>&1 |
+    /usr/bin/sed -n 's/^# *designated => //p'
+}
+
+code_hash() {
+  /usr/bin/codesign -dvvv "$1" 2>&1 |
+    /usr/bin/sed -n 's/^CDHash=//p'
+}
+
+build_roles() {
+  local target="$1"
+  local provider="$2"
+  local verifier_mode="$3"
+  local identifier_suffix="$4"
+  local controller_public_key="$5"
+  local verifier="$target/macos-broker"
+  local broker="$target/macos-broker-internal"
+  local verifier_info="$target/verifier-info.plist"
+  local broker_info="$target/broker-info.plist"
+  local module_cache="$target/module-cache"
+  local state_path="$target/state.json"
+  local verifier_digest
+  local verifier_requirement
+  local verifier_cdhash
+  local provider_flag
+
+  if [ "$provider" = "security" ]; then
+    provider_flag="AGENT_HARNESS_SECURITY_PROVIDER"
+  elif [ "$provider" = "signed-memory" ]; then
+    provider_flag="AGENT_HARNESS_SIGNED_MEMORY_PROVIDER"
+  else
+    authority_error "native authority provider is invalid"
+  fi
+
+  /bin/mkdir -p "$target"
+  /bin/chmod 700 "$target"
+  plist_create \
+    "$verifier_info" \
+    "local.agent-harness.verifier.$identifier_suffix"
+  /usr/bin/plutil -insert AgentHarnessVerifierMode \
+    -string "$verifier_mode" "$verifier_info"
+  /usr/bin/plutil -insert AgentHarnessProvider \
+    -string "$provider" "$verifier_info"
+  /usr/bin/plutil -insert AgentHarnessStatePath \
+    -string "$state_path" "$verifier_info"
+  /usr/bin/plutil -insert AgentHarnessControllerPublicKey \
+    -string "$controller_public_key" "$verifier_info"
+  compile_role \
+    AGENT_HARNESS_VERIFIER_ROLE \
+    "$provider_flag" \
+    "$verifier_info" \
+    "$verifier" \
+    "$module_cache"
+  /usr/bin/codesign --force --sign - \
+    --identifier "local.agent-harness.verifier.$identifier_suffix" \
+    "$verifier"
+  /bin/chmod 500 "$verifier"
+  verifier_digest="$(stable_digest "$verifier")"
+  verifier_requirement="$(designated_requirement "$verifier")"
+  verifier_cdhash="$(code_hash "$verifier")"
+  [ -n "$verifier_requirement" ] && [ -n "$verifier_cdhash" ] ||
+    authority_error "signed verifier identity unavailable"
+
+  plist_create \
+    "$broker_info" \
+    "local.agent-harness.broker.$identifier_suffix"
+  /usr/bin/plutil -insert AgentHarnessProvider \
+    -string "$provider" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessVerifierMode \
+    -string "$verifier_mode" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessStatePath \
+    -string "$state_path" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessControllerPublicKey \
+    -string "$controller_public_key" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessTrustedVerifierRequirement \
+    -string "$verifier_requirement" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessTrustedVerifierCodeHash \
+    -string "$verifier_cdhash" "$broker_info"
+  /usr/bin/plutil -insert AgentHarnessTrustedVerifierContentDigest \
+    -string "$verifier_digest" "$broker_info"
+  compile_role \
+    AGENT_HARNESS_BROKER_ROLE \
+    "$provider_flag" \
+    "$broker_info" \
+    "$broker" \
+    "$module_cache"
+  /usr/bin/codesign --force --sign - \
+    --identifier "local.agent-harness.broker.$identifier_suffix" \
+    "$broker"
+  /bin/chmod 500 "$broker"
+  require_role "$verifier" &&
+    require_role "$broker" ||
+    authority_error "signed authority role verification failed"
+  /bin/rm -rf "$module_cache" "$verifier_info" "$broker_info"
+}
+
+attestation_with_path() {
+  local verifier="$1"
+  local state_path="$2"
+  local attestation
+  attestation="$("$verifier" --attest)"
+  /usr/bin/plutil -create xml1 -o - -- - |
+    /usr/bin/plutil -insert attestation \
+      -json "$attestation" -o - -- - |
+    /usr/bin/plutil -insert verifier_path \
+      -string "$verifier" -o - -- - |
+    /usr/bin/plutil -insert state_path \
+      -string "$state_path" -o - -- - |
+    /usr/bin/plutil -convert json -o - -- -
+}
+
+if [ "${1:-}" = "--build-test-roles" ] && [ "$#" -eq 3 ]; then
+  TEST_ROOT="$2"
+  CONTROLLER_PUBLIC_KEY="$3"
+  case "$TEST_ROOT" in
+    /*) ;;
+    *) authority_error "test role root must be absolute" ;;
+  esac
+  [ ! -e "$TEST_ROOT" ] ||
+    [ -d "$TEST_ROOT" ] ||
+    authority_error "test role root must be a directory"
+  build_roles \
+    "$TEST_ROOT" "signed-memory" "test" "test" \
+    "$CONTROLLER_PUBLIC_KEY"
+  attestation_with_path \
+    "$TEST_ROOT/macos-broker" \
+    "$TEST_ROOT/state.json"
+  exit 0
+fi
+
+if [ "${1:-}" = "--build-production-roles" ] && [ "$#" -eq 3 ]; then
+  BUILD_ROOT="$2"
+  CONTROLLER_PUBLIC_KEY="$3"
+  case "$BUILD_ROOT" in
+    /*) ;;
+    *) authority_error "production role root must be absolute" ;;
+  esac
+  [ ! -e "$BUILD_ROOT" ] ||
+    [ -d "$BUILD_ROOT" ] ||
+    authority_error "production role root must be a directory"
+  build_roles \
+    "$BUILD_ROOT" "security" "production" "production" \
+    "$CONTROLLER_PUBLIC_KEY"
+  attestation_with_path \
+    "$BUILD_ROOT/macos-broker" \
+    "$BUILD_ROOT/state.json"
+  exit 0
+fi
+
+if [ "${1:-}" = "--self-test" ] && [ "$#" -eq 1 ]; then
+  WORK="$(/usr/bin/mktemp -d \
+    "${TMPDIR:-/tmp}/ah-authority-self-test.XXXXXX")"
+  cleanup_self_test() {
+    /bin/rm -rf "$WORK"
+  }
+  trap cleanup_self_test EXIT
+  build_roles "$WORK" "signed-memory" "test" "self-test" "AA=="
+  "$WORK/macos-broker" --self-test
+  exit 0
+fi
+
+CACHE_ROOT="$ROOT/runtime/authority/.ah-authority-cache"
+CACHE_VERIFIER="$CACHE_ROOT/macos-broker"
+CACHE_BROKER="$CACHE_ROOT/macos-broker-internal"
+CACHE_MANIFEST="$CACHE_ROOT/manifest"
+CACHE_LOCK="$CACHE_ROOT/.build-lock"
+SOURCE_DIGEST="$(stable_digest "$SOURCE")"
+SWIFTC_IDENTITY="$(
+  "$SWIFTC" -version |
+    /usr/bin/shasum -a 256 |
+    /usr/bin/awk '{print $1}'
+)"
+BUILD_IDENTITY="$(
+  {
+    printf 'source=%s\n' "$SOURCE_DIGEST"
+    printf 'swiftc=%s\n' "$SWIFTC_IDENTITY"
+    printf 'sdk=%s\n' "$SDK_VERSION"
+    printf 'target=%s-%s\n' "$ARCH" "$SDK_MAJOR"
+  } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+)"
+
+/bin/mkdir -p "$CACHE_ROOT"
+/bin/chmod 700 "$CACHE_ROOT"
+require_directory "$CACHE_ROOT" ||
+  authority_error "native authority cache metadata mismatch"
+
+cache_is_valid() {
+  [ -f "$CACHE_MANIFEST" ] && [ ! -L "$CACHE_MANIFEST" ] ||
+    return 1
+  [ "$(/usr/bin/sed -n '1p' "$CACHE_MANIFEST")" = "$BUILD_IDENTITY" ] ||
+    return 1
+  require_role "$CACHE_VERIFIER" &&
+    require_role "$CACHE_BROKER" &&
+    [ "$(/usr/bin/sed -n '2p' "$CACHE_MANIFEST")" = "$(stable_digest "$CACHE_VERIFIER")" ] &&
+    [ "$(/usr/bin/sed -n '3p' "$CACHE_MANIFEST")" = "$(stable_digest "$CACHE_BROKER")" ]
+}
+
+if [ -e "$CACHE_LOCK" ]; then
+  LOCK_OWNER="$(/bin/cat "$CACHE_LOCK" 2>/dev/null || true)"
+  case "$LOCK_OWNER" in
+    ''|*[!0-9]*) /bin/rm -f "$CACHE_LOCK" ;;
+    *)
+      if ! /bin/kill -0 "$LOCK_OWNER" 2>/dev/null; then
+        /bin/rm -f "$CACHE_LOCK"
+      fi
+      ;;
+  esac
+fi
+/usr/bin/shlock -f "$CACHE_LOCK" -p "$$" 2>/dev/null ||
+  authority_error "native authority cache is locked"
+cleanup_lock() {
+  [ "$(/bin/cat "$CACHE_LOCK" 2>/dev/null || true)" = "$$" ] &&
+    /bin/rm -f "$CACHE_LOCK"
+}
+trap cleanup_lock EXIT HUP INT TERM
+/bin/chmod 600 "$CACHE_LOCK"
+
+if ! cache_is_valid; then
+  BUILD_ROOT="$(/usr/bin/mktemp -d "$CACHE_ROOT/.build.XXXXXX")"
+  build_roles \
+    "$BUILD_ROOT" "security" "production" "production" "AA=="
+  VERIFIER_DIGEST="$(stable_digest "$BUILD_ROOT/macos-broker")"
+  BROKER_DIGEST="$(stable_digest "$BUILD_ROOT/macos-broker-internal")"
+  printf '%s\n%s\n%s\n' \
+    "$BUILD_IDENTITY" "$VERIFIER_DIGEST" "$BROKER_DIGEST" \
+    >"$BUILD_ROOT/manifest"
+  /bin/chmod 400 "$BUILD_ROOT/manifest"
+  /bin/mv -f "$BUILD_ROOT/macos-broker" "$CACHE_VERIFIER"
+  /bin/mv -f "$BUILD_ROOT/macos-broker-internal" "$CACHE_BROKER"
+  /bin/mv -f "$BUILD_ROOT/manifest" "$CACHE_MANIFEST"
+  /bin/rm -rf "$BUILD_ROOT"
+fi
+cache_is_valid ||
+  authority_error "native authority cache readback mismatch"
+cleanup_lock
+trap - EXIT HUP INT TERM
+
+exec "$CACHE_VERIFIER" "$@"

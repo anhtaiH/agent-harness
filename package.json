@@ -1,20 +1,46 @@
 {
   "name": "agent-harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Opt-in local harness for agentic engineering workflows.",
+  "files": [
+    "bin/agent-harness",
+    "runtime/agents/*.md",
+    "runtime/authority/*.swift",
+    "runtime/bin/*",
+    "runtime/hooks/*.py",
+    "runtime/instructions/*.md",
+    "runtime/lazy-playwright/*.json",
+    "runtime/mcp/*.mjs",
+    "runtime/mcp/*.ts",
+    "runtime/policy/*.json",
+    "runtime/roles/*.md",
+    "runtime/schemas/*.json",
+    "runtime/skills/*/SKILL.md",
+    "runtime/templates/*.md",
+    "runtime/toolchain-overrides/*.txt",
+    "runtime/toolchain-manifest.v1.json",
+    "src/*.py",
+    "src/harness_core/*.py",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "README.md",
+    "INSTALL.md"
+  ],
   "bin": {
     "agent-harness": "bin/agent-harness",
     "ah": "bin/agent-harness"
   },
   "scripts": {
-    "test": "./tests/run.sh",
-    "preflight": "./tests/preflight.sh",
     "self-check": "./bin/agent-harness self-check"
   },
   "dependencies": {
-    "fastmcp": "^4.0.1",
-    "zod": "^3.25.17"
+    "fastmcp": "^4.12.1",
+    "zod": "^4.1.13"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5",
+    "hono": "4.12.34"
   }
 }

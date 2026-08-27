@@ -1,4 +1,4 @@
-# Best-effort mirror of the local gate. `npm run preflight` on a developer
+# Best-effort mirror of the local gate. `./tests/preflight.sh` on a developer
 # machine is the release authority; do not treat a green (or absent) run here
 # as verification.
 name: CI
@@ -16,7 +16,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            expected_os: Linux
+            expected_arch: x86_64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            expected_os: Linux
+            expected_arch: aarch64
+          - name: macos-arm64
+            os: macos-15
+            expected_os: Darwin
+            expected_arch: arm64
+          - name: macos-x86_64
+            os: macos-15-intel
+            expected_os: Darwin
+            expected_arch: x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,10 +44,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify runner architecture
+        run: test "$(uname -s)" = "${{ matrix.expected_os }}" && test "$(uname -m)" = "${{ matrix.expected_arch }}"
+      - name: Resolve canonical Python binding
+        run: echo "AGENT_HARNESS_PYTHON=$(python -c 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())')" >> "$GITHUB_ENV"
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Run test suite
-        run: npm test
+        run: ./tests/run.sh
+      - name: Verify packed randomized-home lifecycle
+        run: AGENT_HARNESS_TEST_TOOLCHAIN=full AGENT_HARNESS_REQUIRE_TOOLCHAIN_ACTIONS=1 AGENT_HARNESS_TEST_REGISTER=1 ./tests/package_smoke.sh
       - name: Run preflight (fresh-clone gate)
-        if: matrix.os == 'ubuntu-latest'
-        run: npm run preflight -- --skip-macos-sim
+        if: matrix.name == 'linux-x86_64'
+        run: ./tests/preflight.sh --skip-macos-sim

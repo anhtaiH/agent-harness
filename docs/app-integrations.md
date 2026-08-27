@@ -8,7 +8,7 @@ The intended post-install experience: open Claude Code, Codex, Cursor, opencode,
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | Managed block in `~/.claude/CLAUDE.md` + ignored repo-local `CLAUDE.local.md` | `claude mcp add --scope user` | Hooks merged into `~/.claude/settings.json` (PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart) + `permissions.deny` seeds | Skills → `~/.claude/skills/`, subagents → `~/.claude/agents/` | Managed blocks are marker-delimited; settings merges are metadata-tracked with backups; assets are sha-tracked and only removed on restore if unmodified |
 | Codex CLI | Managed block in `~/.codex/AGENTS.md` (respects `AGENTS.override.md`) | Managed block in `~/.codex/config.toml` | Env-scrubbed `ah-codex` wrapper; pair with Codex `sandbox_mode`/`approval_policy` | Skills → `~/.codex/skills/agent-harness/` | Same managed-block + sha-tracked rules |
-| Cursor | Ignored repo-local `.cursor/rules/agent-harness.mdc` | `~/.cursor/mcp.json` (existing config untouched unless `--force`) | `~/.cursor/hooks.json` bridge (beforeShellExecution, beforeMCPExecution) + `~/.cursor/cli-config.json` deny seeds | — | JSON merges are metadata-tracked with backups |
+| Cursor | Global `~/.cursor/rules/agent-harness.mdc` | `~/.cursor/mcp.json` (existing config untouched unless `--force`) | One `preToolUse` bridge in `~/.cursor/hooks.json`; `cli-config.json` remains user-owned | — | JSON merges are metadata-tracked with backups |
 | opencode | Managed block in `~/.config/opencode/AGENTS.md` | `mcp` entry in `~/.config/opencode/opencode.json` (`.jsonc` users get a snippet instead) | Plugin at `~/.config/opencode/plugins/agent-harness.js` (`tool.execute.before`) | Skills → `~/.config/opencode/skills/` | Existing entries never replaced without `--force` |
 | pi | Managed block in `~/.pi/agent/APPEND_SYSTEM.md` | — (pi is deliberately CLI-first; agents use the `harness` CLI) | Extension at `~/.pi/agent/extensions/agent-harness.ts` (blockable `tool_call`) | Skills → repo `.agents/skills/` (git-excluded) | Managed blocks + tracked files |
 | Gemini CLI & others | — | Snippet: `<runtime>/state/adapter-snippets/gemini-mcp.json` | Shared CLI | — | Manual |
@@ -18,10 +18,10 @@ All five gate surfaces call the same policy engine (`runtime/hooks/pre-tool-poli
 ## Safe Mutation Rules
 
 - Managed text edits are wrapped in `agent-harness:<workspace>:...` markers; reruns replace only those blocks.
-- JSON config merges (Claude settings, Cursor hooks/cli-config, opencode.json, Cursor mcp.json) keep timestamped backups under `<runtime>/state/adapters/backups/` and restore metadata under `<runtime>/state/adapters/`.
+- JSON config merges (Claude settings, Cursor hooks, opencode.json, Cursor mcp.json) keep timestamped backups under `<runtime>/state/adapters/backups/` and restore metadata under `<runtime>/state/adapters/`.
 - Copied assets (skills, subagents) record their sha256; restore deletes them only if unmodified, otherwise leaves them and reports why.
 - Existing non-harness files/entries are skipped, never overwritten, unless `--force`.
-- Repo-local files (`CLAUDE.local.md`, `.cursor/rules/agent-harness.mdc`, `.agents/skills/`) are added to `.git/info/exclude`, never tracked.
+- Repo-local files (`CLAUDE.local.md`, `.agents/skills/`) are added to `.git/info/exclude`, never tracked.
 - `agent-harness uninstall --restore-adapters` reverses all of the above.
 
 ## What The Human Does After Setup

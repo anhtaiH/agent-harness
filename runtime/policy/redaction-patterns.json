@@ -13,6 +13,6 @@
   "-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----",
   "eyJ[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}",
   "(?:mongodb(?:\\+srv)?|postgres|postgresql|mysql|redis|rediss)://[^:@/\\s]+:[^@/\\s]{8,}@[^/\\s]+",
-  "authorization\\s*[:=]\\s*(?:bearer\\s+)?[\\\"']?(?!<redacted>|\\$)[0-9A-Za-z._~+/=\\-]{24,}",
+  "authorization\\s*[:=]\\s*(?:bearer\\s+)?[\\\"']?(?!<redacted>|\\$|session\\.controllerAuthorization\\b)[0-9A-Za-z._~+/=\\-]{24,}",
   "(api[_-]?key|token|secret|password)\\s*[:=]\\s*[\\\"']?[0-9A-Za-z._=+\\-/]{24,}"
 ]

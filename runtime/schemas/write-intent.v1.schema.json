@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/write-intent.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "task_id", "authorization_epoch", "provider", "operation", "target", "content_digest", "precondition", "expires_at", "reservation_id", "idempotency_key", "provider_operation_id", "status"],
+  "properties": {
+    "schema": {"const": "agent-harness/write-intent"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "task_id": {"type": "string", "minLength": 1},
+    "authorization_epoch": {"type": "integer", "minimum": 0},
+    "provider": {"type": "string", "minLength": 1},
+    "operation": {"type": "string", "minLength": 1},
+    "target": {"type": ["string", "object"]},
+    "content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "precondition": {"type": "object"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "reservation_id": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "provider_operation_id": {"type": ["string", "null"]},
+    "status": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/host-report.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "host", "executable", "version", "auth_state", "capabilities", "adapter_receipt", "health_failures", "health_warnings"],
+  "properties": {
+    "schema": {"const": "agent-harness/host-report"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "host": {"type": "string", "minLength": 1},
+    "executable": {"type": "string", "pattern": "^/"},
+    "version": {"type": "string", "minLength": 1},
+    "auth_state": {"type": "string", "minLength": 1},
+    "capabilities": {"type": ["array", "object"]},
+    "adapter_receipt": {"type": ["object", "null"]},
+    "health_failures": {"type": "array", "items": {"type": "string"}},
+    "health_warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

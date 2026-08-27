@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/source-content-identity.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "algorithm", "algorithm_version", "inclusion_policy", "policy_version", "ordered_manifest_digest", "source_commit", "frozen_snapshot_digest", "digest", "entries"],
+  "properties": {
+    "schema": {"const": "agent-harness/source-content-identity"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "algorithm": {"const": "sha256"},
+    "algorithm_version": {"type": "integer", "minimum": 1},
+    "inclusion_policy": {"type": "string", "minLength": 1},
+    "policy_version": {"type": "integer", "minimum": 1},
+    "ordered_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "frozen_snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "mode", "object_id"],
+        "properties": {
+          "path": {"type": "string"},
+          "kind": {"enum": ["blob", "symlink", "submodule"]},
+          "mode": {"type": "string", "pattern": "^[0-9]{6}$"},
+          "object_id": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+          "blob_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "symlink_target_encoding": {"const": "base64"},
+          "symlink_target_base64": {
+            "type": "string",
+            "contentEncoding": "base64"
+          },
+          "submodule_identity": {"type": ["object", "null"]}
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"kind": {"const": "symlink"}},
+              "required": ["kind"]
+            },
+            "then": {
+              "required": [
+                "symlink_target_encoding",
+                "symlink_target_base64"
+              ]
+            }
+          }
+        ],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

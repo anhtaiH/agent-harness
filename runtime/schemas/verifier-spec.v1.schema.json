@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/verifier-spec.v1.schema.json",
+  "type": "object",
+  "required": ["schema", "schema_version", "created_at", "installation_id", "verifier_id", "task_id", "risk_tier", "surface", "argv", "artifacts", "timeout", "pass_criteria"],
+  "properties": {
+    "schema": {"const": "agent-harness/verifier-spec"},
+    "schema_version": {"const": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "installation_id": {"type": "string", "format": "uuid"},
+    "verifier_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "risk_tier": {"enum": ["green", "yellow", "red"]},
+    "surface": {"type": "string", "minLength": 1},
+    "argv": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "timeout": {"type": "number", "exclusiveMinimum": 0},
+    "pass_criteria": {"type": ["array", "object"]}
+  },
+  "additionalProperties": true
+}

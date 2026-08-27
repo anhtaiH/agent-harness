@@ -27,7 +27,7 @@ mkdir -p "$WORK"
 step() { printf '\n== %s ==\n' "$1"; }
 
 step "1/5 syntax checks"
-python3 -m py_compile "$ROOT/src/agent_harness.py" "$ROOT"/runtime/hooks/*.py
+"$AGENT_HARNESS_PYTHON" -m py_compile "$ROOT/src/agent_harness.py" "$ROOT"/runtime/hooks/*.py
 node --check "$ROOT/runtime/mcp/server.mjs"
 node --check "$ROOT/runtime/mcp/opencode-plugin.mjs"
 for script in "$ROOT"/runtime/bin/ah-* "$ROOT/runtime/bin/env-scrub.sh" "$ROOT"/tests/*.sh; do
@@ -35,8 +35,16 @@ for script in "$ROOT"/runtime/bin/ah-* "$ROOT/runtime/bin/env-scrub.sh" "$ROOT"/
 done
 echo "syntax ok"
 
+cmp -s "$ROOT/package-lock.json" "$ROOT/npm-shrinkwrap.json" || {
+  echo "package-lock.json and npm-shrinkwrap.json diverged" >&2
+  exit 1
+}
+(cd "$ROOT" && npm audit --omit=dev --audit-level=low >/dev/null)
+
 step "2/5 gate verification (source tree)"
 "$ROOT/bin/agent-harness" verify-gates --json | grep -q '"ok": true'
+"$AGENT_HARNESS_PYTHON" "$ROOT/tests/portability_gate.py" --tree "$ROOT" --self-test
+"$ROOT/tests/package_smoke.sh"
 echo "gates ok"
 
 step "3/5 fresh clone"
@@ -46,7 +54,7 @@ git clone --quiet --local --no-hardlinks "$ROOT" "$CLONE"
 echo "clone at $CLONE ($(git -C "$CLONE" rev-parse --short HEAD))"
 
 step "4/5 full suite from the fresh clone"
-(cd "$CLONE" && npm ci --silent >/dev/null && npm test >"$WORK/suite.log" 2>&1) || {
+(cd "$CLONE" && npm ci --silent --ignore-scripts >/dev/null && ./tests/run.sh >"$WORK/suite.log" 2>&1) || {
   tail -30 "$WORK/suite.log" >&2
   exit 1
 }
@@ -58,7 +66,7 @@ else
   step "5/5 full suite under simulated macOS TMPDIR (symlinked base + trailing slash)"
   mkdir -p "$WORK/private/realtmp"
   ln -s "$WORK/private/realtmp" "$WORK/tmplink"
-  (cd "$CLONE" && TMPDIR="$WORK/tmplink/" npm test >"$WORK/suite-macsim.log" 2>&1) || {
+  (cd "$CLONE" && TMPDIR="$WORK/tmplink/" ./tests/run.sh >"$WORK/suite-macsim.log" 2>&1) || {
     tail -30 "$WORK/suite-macsim.log" >&2
     exit 1
   }
