@@ -66,15 +66,20 @@ is_metadata_command() {
   return 1
 }
 
+metadata_command=0
+if [ "${#args[@]}" -gt 0 ] && is_metadata_command "${args[@]}"; then
+  metadata_command=1
+fi
+
 if [ -n "$task_id" ] && ! [[ "$task_id" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,95}$ ]]; then
   echo "Invalid agent harness task id: $task_id" >&2
   exit 2
 fi
-if [ -z "$task_id" ] && ! is_metadata_command "${args[@]}"; then
+if [ -z "$task_id" ] && [ "$metadata_command" -eq 0 ]; then
   echo "Agent harness requires --task <task-id> for agent sessions." >&2
   exit 2
 fi
-if [ -n "$task_id" ] && [ "$native_worktree_requested" -eq 1 ] && [ "$allow_native_worktree" != "1" ] && ! is_metadata_command "${args[@]}"; then
+if [ -n "$task_id" ] && [ "$native_worktree_requested" -eq 1 ] && [ "$allow_native_worktree" != "1" ] && [ "$metadata_command" -eq 0 ]; then
   echo "Agent harness blocked native worktree flags for task $task_id. Use the harness-managed worktree unless the packet explicitly allows otherwise." >&2
   exit 2
 fi
@@ -93,4 +98,7 @@ case "$harness_mode" in
   *) echo "Unknown --harness-mode: $harness_mode" >&2; exit 2 ;;
 esac
 
+if [ "${#args[@]}" -eq 0 ]; then
+  exec claude
+fi
 exec claude "${args[@]}"

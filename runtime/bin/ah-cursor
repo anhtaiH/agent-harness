@@ -53,11 +53,16 @@ is_metadata_command() {
   return 1
 }
 
+metadata_command=0
+if [ "${#args[@]}" -gt 0 ] && is_metadata_command "${args[@]}"; then
+  metadata_command=1
+fi
+
 if [ -n "$task_id" ] && ! [[ "$task_id" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,95}$ ]]; then
   echo "Invalid agent harness task id: $task_id" >&2
   exit 2
 fi
-if [ -z "$task_id" ] && ! is_metadata_command "${args[@]}"; then
+if [ -z "$task_id" ] && [ "$metadata_command" -eq 0 ]; then
   echo "Agent harness requires --task <task-id> for Cursor agent sessions." >&2
   exit 2
 fi
@@ -67,9 +72,21 @@ if [ -n "$task_id" ]; then
 fi
 
 case "$harness_mode" in
-  plan) args=(--mode plan "${args[@]}") ;;
+  plan)
+    if [ "${#args[@]}" -eq 0 ]; then
+      args=(--mode plan)
+    else
+      args=(--mode plan "${args[@]}")
+    fi
+    ;;
   run) ;;
-  yolo) args=(--yolo --sandbox disabled "${args[@]}") ;;
+  yolo)
+    if [ "${#args[@]}" -eq 0 ]; then
+      args=(--yolo --sandbox disabled)
+    else
+      args=(--yolo --sandbox disabled "${args[@]}")
+    fi
+    ;;
   *) echo "Unknown --harness-mode: $harness_mode" >&2; exit 2 ;;
 esac
 export AGENT_HARNESS_MODE="$harness_mode"
@@ -83,4 +100,7 @@ if [ -z "$cursor_bin" ]; then
   exit 127
 fi
 
+if [ "${#args[@]}" -eq 0 ]; then
+  exec "$cursor_bin"
+fi
 exec "$cursor_bin" "${args[@]}"
